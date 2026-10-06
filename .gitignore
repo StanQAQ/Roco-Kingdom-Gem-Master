@@ -1,0 +1,54 @@
+# Python 生成文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# 测试、覆盖率和类型检查缓存
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# 打包和构建产物
+build/
+dist/
+*.egg-info/
+*.egg
+
+# 游戏运行日志和本地数据
+logs/
+*.log
+
+# Qt / IDE / 编辑器本地文件
+.vscode/
+.idea/
+*.user
+*.user.*
+*.suo
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Qt 构建与部署临时文件
+.qtcreator/
+*.qmlc
+*.jsc
+
+# 本地环境配置（如将来添加）
+.env
+.env.*
+!.env.example
+
+后续需求.md
