@@ -73,7 +73,7 @@ class Game:
 
     def _finish_turn(self) -> None:
         market_exhausted = not any(self.state.market.cards[level] for level in (1, 2, 3))
-        if any(player.score >= 20 for player in self.state.players) or market_exhausted:
+        if any(player.score >= 18 for player in self.state.players) or market_exhausted:
             self.state.end_triggered = True
         self.state.next_player()
         if self.state.end_triggered and self.state.current_player == 0:

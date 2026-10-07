@@ -96,17 +96,19 @@ def main() -> None:
     parser.add_argument("--ai-only", action="store_true")
     parser.add_argument("--ai-battle", action="store_true", help="启动四 AI 自动对战模式")
     parser.add_argument("--interval", type=float, help="AI 每次行动间隔秒数")
-    parser.add_argument("--gui", action="store_true", help="启动 Tkinter 图形界面")
+    parser.add_argument("--gui", action="store_true", help="启动 Qt6 图形界面")
     args = parser.parse_args()
     if args.gui:
-        import tkinter as tk
-
-        if sys.version_info < (3, 11) or tk.TkVersion < 8.6:
-            parser.error("图形界面需要 Python 3.11+ 和 Tk 8.6+；请换用符合要求的解释器（本机可试 python -m src.cli --gui）")
-    seed, seed_mode = select_seed(args.seed, args.random_seed)
+        if sys.version_info < (3, 11):
+            parser.error("图形界面需要 Python 3.11+")
+        try:
+            from PySide6.QtWidgets import QApplication  # noqa: F401
+        except ImportError:
+            parser.error("Qt6 图形界面需要安装 PySide6：python -m pip install PySide6")
+    seed, seed_mode = select_seed(args.seed, args.random_seed, default_random=args.gui)
     print("本局使用" + seed_description(seed, seed_mode))
     if args.gui:
-        from .gui import MagicGemsApp
+        from .qt_gui import MagicGemsQtApp
 
         if args.ai_battle:
             if args.interval is None:
@@ -116,9 +118,15 @@ def main() -> None:
                 interval = args.interval
             if interval < 0:
                 parser.error("--interval 不能小于 0")
-            MagicGemsApp(seed, ai_battle=True, interval=interval, seed_mode=seed_mode).mainloop()
+            app = QApplication(sys.argv)
+            window = MagicGemsQtApp(seed, ai_battle=True, interval=interval, seed_mode=seed_mode)
+            window.show()
+            sys.exit(app.exec())
         else:
-            MagicGemsApp(seed, seed_mode=seed_mode).mainloop()
+            app = QApplication(sys.argv)
+            window = MagicGemsQtApp(seed, seed_mode=seed_mode)
+            window.show()
+            sys.exit(app.exec())
         return
     if args.ai_battle:
         if args.interval is None:

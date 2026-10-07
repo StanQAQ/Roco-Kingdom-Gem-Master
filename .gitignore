@@ -30,6 +30,9 @@ dist/
 logs/
 *.log
 
+# 自动对局平衡测试结果（逐局数据、汇总和报告）
+/analysis/balance_*/
+
 # Qt / IDE / 编辑器本地文件
 .vscode/
 .idea/

@@ -30,11 +30,11 @@ def prompt_for_seed(input_func: Callable[[str], str] = input) -> tuple[int, str]
         print("请输入 f 或 r。")
 
 
-def select_seed(fixed_seed: int | None, random_requested: bool) -> tuple[int, str]:
-    """优先使用启动参数；未传参时进入交互选择。"""
+def select_seed(fixed_seed: int | None, random_requested: bool, *, default_random: bool = False) -> tuple[int, str]:
+    """优先使用启动参数；GUI 可设为未传参时直接随机。"""
     if fixed_seed is not None:
         return fixed_seed, "fixed"
-    if random_requested:
+    if random_requested or default_random:
         return generate_random_seed(), "random"
     return prompt_for_seed()
 

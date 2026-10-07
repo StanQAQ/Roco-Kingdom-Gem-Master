@@ -53,7 +53,7 @@ def test_dual_discount_is_selected_per_purchase():
 
 def test_end_trigger_finishes_after_full_round():
     current = game()
-    current.state.players[0].score = 20
+    current.state.players[0].score = 18
     current.execute(Action("different", attributes=(Attribute.WATER, Attribute.FIRE, Attribute.GRASS)))
     assert current.state.end_triggered
     assert not current.state.finished
