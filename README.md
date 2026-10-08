@@ -31,6 +31,16 @@ python3 -m pip install PySide6
 
 图形界面未传入种子参数时会直接生成随机种子，无需在终端选择。
 
+## 打包为 Windows 单文件程序
+
+在 Windows 电脑上安装 64 位 Python 3.12，并确保安装 Python Launcher。然后双击项目根目录的 `build_windows_exe.bat`。打包完成后，可直接分发并双击运行：
+
+```text
+dist/MagicGems.exe
+```
+
+生成的单文件程序会直接打开图形界面，不要求玩家另外安装 Python、PySide6 或复制 `media` 资源目录。首次打包需要联网下载构建依赖。也可以将项目推送到 GitHub 后，在 Actions 中手动运行 `Build Windows EXE` 工作流，下载 `MagicGems-Windows-x64` 构建产物。
+
 指定随机种子，便于重现同一组初始市场：
 
 ```bash

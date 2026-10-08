@@ -52,6 +52,9 @@ from .theme import (
 _RESOURCE_SHARD_PIXMAPS: dict[tuple[Attribute, int, float], QPixmap] = {}
 _SAGE_SHARD_PIXMAPS: dict[tuple[int, float], QPixmap] = {}
 _ATTRIBUTE_ICON_PIXMAPS: dict[tuple[Attribute, int, float], QPixmap] = {}
+_RESOURCE_SHARD_SOURCES: dict[Attribute, QPixmap] = {}
+_SAGE_SHARD_SOURCE: QPixmap | None = None
+_ATTRIBUTE_ICON_SOURCES: dict[Attribute, QPixmap] = {}
 
 
 def preferred_serif_family() -> str:
@@ -67,11 +70,13 @@ def resource_shard_pixmap(attribute: Attribute, size: int, device_pixel_ratio: f
     device_pixel_ratio = max(1.0, float(device_pixel_ratio))
     key = (attribute, size, device_pixel_ratio)
     if key not in _RESOURCE_SHARD_PIXMAPS:
-        image_path = (
-            Path(__file__).resolve().parent.parent
-            / "media" / RESOURCE_SHARD_DIR / RESOURCE_SHARD_FILES[attribute]
-        )
-        source = QPixmap(str(image_path))
+        if attribute not in _RESOURCE_SHARD_SOURCES:
+            image_path = (
+                Path(__file__).resolve().parent.parent
+                / "media" / RESOURCE_SHARD_DIR / RESOURCE_SHARD_FILES[attribute]
+            )
+            _RESOURCE_SHARD_SOURCES[attribute] = QPixmap(str(image_path))
+        source = _RESOURCE_SHARD_SOURCES[attribute]
         pixel_size = round(size * device_pixel_ratio)
         pixmap = source.scaled(
             pixel_size,
@@ -86,14 +91,17 @@ def resource_shard_pixmap(attribute: Attribute, size: int, device_pixel_ratio: f
 
 
 def sage_shard_pixmap(size: int, device_pixel_ratio: float = 1.0) -> QPixmap:
+    global _SAGE_SHARD_SOURCE
     device_pixel_ratio = max(1.0, float(device_pixel_ratio))
     key = (size, device_pixel_ratio)
     if key not in _SAGE_SHARD_PIXMAPS:
-        image_path = (
-            Path(__file__).resolve().parent.parent
-            / "media" / RESOURCE_SHARD_DIR / "贤者零碎.png"
-        )
-        source = QPixmap(str(image_path))
+        if _SAGE_SHARD_SOURCE is None:
+            image_path = (
+                Path(__file__).resolve().parent.parent
+                / "media" / RESOURCE_SHARD_DIR / "贤者零碎.png"
+            )
+            _SAGE_SHARD_SOURCE = QPixmap(str(image_path))
+        source = _SAGE_SHARD_SOURCE
         pixel_size = round(size * device_pixel_ratio)
         pixmap = source.scaled(
             pixel_size,
@@ -115,11 +123,13 @@ def attribute_icon_pixmap(
     device_pixel_ratio = max(1.0, float(device_pixel_ratio))
     key = (attribute, size, device_pixel_ratio)
     if key not in _ATTRIBUTE_ICON_PIXMAPS:
-        image_path = (
-            Path(__file__).resolve().parent.parent
-            / "media" / ATTRIBUTE_ICON_DIR / ATTRIBUTE_ICON_FILES[attribute]
-        )
-        source = QPixmap(str(image_path))
+        if attribute not in _ATTRIBUTE_ICON_SOURCES:
+            image_path = (
+                Path(__file__).resolve().parent.parent
+                / "media" / ATTRIBUTE_ICON_DIR / ATTRIBUTE_ICON_FILES[attribute]
+            )
+            _ATTRIBUTE_ICON_SOURCES[attribute] = QPixmap(str(image_path))
+        source = _ATTRIBUTE_ICON_SOURCES[attribute]
         pixel_size = round(size * device_pixel_ratio)
         _ATTRIBUTE_ICON_PIXMAPS[key] = source.scaled(
             pixel_size,
@@ -135,9 +145,11 @@ def attribute_icon_pixmap(
 class CardButton(QPushButton):
     """Uniform 3:4 portrait card widget."""
 
+    STYLE_REFERENCE_HEIGHT = 100
     TOP_INFO_Y = 1
     TOP_INFO_HEIGHT = 15
     CARD_ID_Y = 21
+    PRICE_SHARD_Y = 64
     SHOW_TOP_INFO = True
     impactTintChanged = Signal(QColor)
     impactContentOpacityChanged = Signal(float)
@@ -145,6 +157,10 @@ class CardButton(QPushButton):
     def __init__(self, width: int = 84, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(width, round(width * 4 / 3))
+        self._card_style: dict[str, object] | None = None
+        self._last_card_style_metrics: tuple[object, ...] | None = None
+        self._card_glow_color: QColor | None = None
+        self._card_glow_base_radius = 0
         self.top_left = ""
         self.top_right = ""
         self.card_id = ""
@@ -152,10 +168,99 @@ class CardButton(QPushButton):
         self.cost_items: list[tuple[str, int]] = []
         self._impact_tint = QColor(0, 0, 0, 0)
         self._impact_content_opacity = 1.0
-        self.setStyleSheet(
-            f"QPushButton {{ text-align:center; padding:3px; background:#fff6e8; border:2px solid #b8b8b8; border-radius:{CARD_CORNER_RADIUS}px; }}"
-            "QPushButton:hover { border-color:#6b8799; }"
+        self.set_card_style(
+            background="#fff6e8",
+            border_color="#b8b8b8",
+            border_width=2,
+            padding=3,
+            hover_border_color="#6b8799",
         )
+
+    def set_card_style(
+        self,
+        *,
+        background: str,
+        border_color: str,
+        border_width: int = 2,
+        padding: int = 2,
+        text_color: str | None = None,
+        hover_border_color: str | None = None,
+        object_name: str | None = None,
+    ) -> None:
+        """Set card chrome using the same proportional scale as its contents."""
+        self._card_style = {
+            "background": background,
+            "border_color": border_color,
+            "border_width": border_width,
+            "padding": padding,
+            "text_color": text_color,
+            "hover_border_color": hover_border_color,
+            "object_name": object_name,
+        }
+        self._apply_card_style()
+
+    def _apply_card_style(self) -> None:
+        if self._card_style is None:
+            return
+        scale = self.height() / self.STYLE_REFERENCE_HEIGHT
+        border_width = max(1, int(self._card_style["border_width"] * scale))
+        padding = max(0, int(self._card_style["padding"] * scale))
+        radius = max(1, round(CARD_CORNER_RADIUS * scale))
+        signature = (
+            border_width,
+            padding,
+            radius,
+            self._card_style["background"],
+            self._card_style["border_color"],
+            self._card_style["text_color"],
+            self._card_style["hover_border_color"],
+            self._card_style["object_name"],
+        )
+        if signature == self._last_card_style_metrics:
+            return
+        self._last_card_style_metrics = signature
+        selector = "QPushButton"
+        if self._card_style["object_name"]:
+            selector += f"#{self._card_style['object_name']}"
+        text_color = self._card_style["text_color"]
+        color_rule = f" color:{text_color};" if text_color else ""
+        stylesheet = (
+            f"{selector} {{ text-align:center;{color_rule} "
+            f"padding:{padding}px; background:{self._card_style['background']}; "
+            f"border:{border_width}px solid {self._card_style['border_color']}; "
+            f"border-radius:{radius}px; }}"
+        )
+        hover_color = self._card_style["hover_border_color"]
+        if hover_color:
+            stylesheet += f"{selector}:hover {{ border-color:{hover_color}; }}"
+        self.setStyleSheet(stylesheet)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        # Cards are resized during move/scale animations as well as in piles.
+        # Refresh only when rounded stylesheet metrics actually change.
+        self._apply_card_style()
+        self._apply_card_glow()
+
+    def set_card_glow(self, color: str, base_blur_radius: float = 8) -> None:
+        self._card_glow_color = QColor(color)
+        self._card_glow_base_radius = base_blur_radius
+        effect = self.graphicsEffect()
+        if not isinstance(effect, QGraphicsDropShadowEffect):
+            effect = QGraphicsDropShadowEffect(self)
+            effect.setOffset(0, 0)
+            self.setGraphicsEffect(effect)
+        effect.setColor(self._card_glow_color)
+        self._apply_card_glow()
+
+    def _apply_card_glow(self) -> None:
+        if self._card_glow_color is None:
+            return
+        effect = self.graphicsEffect()
+        if isinstance(effect, QGraphicsDropShadowEffect):
+            effect.setBlurRadius(
+                max(1, self._card_glow_base_radius * self.height() / self.STYLE_REFERENCE_HEIGHT)
+            )
 
     def set_card_content(self, top_left: str, top_right: str, card_id: str, cost_items: list[tuple[str, int]]) -> None:
         self.top_left = top_left
@@ -200,18 +305,21 @@ class CardButton(QPushButton):
         inset_x, inset_y = round(4 * scale), round(3 * scale)
         rect = self.rect().adjusted(inset_x, inset_y, -inset_x, -inset_y)
 
-        def draw(text: str, x: int, y: int, width: int, height: int, size: float, bold: bool, align: Qt.AlignmentFlag) -> None:
+        def draw(text: str, x: int, y: int, width: int, height: int, size: float, bold: bool, align: Qt.AlignmentFlag, *, heavy: bool = False) -> None:
             if not text:
                 return
             font = QFont(QApplication.font())
             point_size = size * scale
             font.setBold(bold)
-            while point_size > 4.2:
+            if heavy:
+                font.setWeight(QFont.Weight.Black)
+            minimum_point_size = max(1.0, 4.2 * self.height() / self.STYLE_REFERENCE_HEIGHT)
+            while point_size > minimum_point_size:
                 font.setPointSizeF(point_size)
                 if QFontMetricsF(font).horizontalAdvance(text) <= width - 2:
                     break
                 point_size -= .3
-            font.setPointSizeF(max(4.2, point_size))
+            font.setPointSizeF(max(minimum_point_size, point_size))
             painter.setFont(font)
             painter.setPen(self.palette().color(QPalette.ColorRole.ButtonText))
             painter.drawText(x, y, width, height, int(align | Qt.AlignmentFlag.AlignVCenter), text)
@@ -260,8 +368,8 @@ class CardButton(QPushButton):
                 )
             draw(
                 self.top_right, rect.left() + left_width, rect.top() + round(self.TOP_INFO_Y * scale),
-                rect.width() - left_width, round(self.TOP_INFO_HEIGHT * scale), 8.5, True,
-                Qt.AlignmentFlag.AlignRight,
+                rect.width() - left_width, round(self.TOP_INFO_HEIGHT * scale), 10.5, True,
+                Qt.AlignmentFlag.AlignRight, heavy=True,
             )
         draw(
             self.display_card_id, rect.left(), rect.top() + round(self.CARD_ID_Y * scale),
@@ -305,7 +413,7 @@ class CardButton(QPushButton):
                         painter.save()
                         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
                         icon_x = x + (width - icon_size) // 2
-                        icon_y = rect.top() + round(48 * scale) + (round(13 * scale) - icon_size) // 2
+                        icon_y = rect.top() + round(self.PRICE_SHARD_Y * scale) + (round(13 * scale) - icon_size) // 2
                         painter.drawPixmap(icon_x, icon_y, icon)
                         number = str(amount)
                         number_font = QFont(QApplication.font())
@@ -325,7 +433,7 @@ class CardButton(QPushButton):
                         number_x = icon_x + (icon_size - metrics.horizontalAdvance(number)) / 2
                         number_y = icon_y + (icon_size - metrics.height()) / 2 + metrics.ascent()
                         number_path.addText(number_x, number_y, number_font, number)
-                        outline = QPen(QColor("#43291d"), max(0.6, 0.8 * scale))
+                        outline = QPen(QColor("#43291d"), max(0.35, 0.8 * scale))
                         outline.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
                         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
                         painter.strokePath(number_path, outline)
@@ -342,8 +450,8 @@ class CardButton(QPushButton):
             rounded = QPainterPath()
             rounded.addRoundedRect(
                 self.rect().adjusted(0, 0, -1, -1),
-                CARD_CORNER_RADIUS,
-                CARD_CORNER_RADIUS,
+                CARD_CORNER_RADIUS * self.height() / self.STYLE_REFERENCE_HEIGHT,
+                CARD_CORNER_RADIUS * self.height() / self.STYLE_REFERENCE_HEIGHT,
             )
             painter.setClipPath(rounded)
             painter.fillPath(rounded, self._impact_tint)
@@ -734,8 +842,11 @@ def apply_specialization_glow(widget: QWidget, card: PetCard) -> None:
     color = specialization_glow_color(card)
     if color is None:
         return
+    if isinstance(widget, CardButton):
+        widget.set_card_glow(color)
+        return
     glow = QGraphicsDropShadowEffect(widget)
-    glow.setBlurRadius(8)
+    glow.setBlurRadius(max(1, 8 * widget.height() / CardButton.STYLE_REFERENCE_HEIGHT))
     glow.setOffset(0, 0)
     glow.setColor(QColor(color))
     widget.setGraphicsEffect(glow)
@@ -765,18 +876,20 @@ class OwnedCardView(CardButton):
         self.card_id = card.card_id
         glow_color = specialization_glow_color(card)
         if dual:
-            self.setStyleSheet(
-                f"QPushButton {{ background:#fff1bf; border:3px solid #d9a817; padding:1px; border-radius:{CARD_CORNER_RADIUS}px; }}"
+            self.set_card_style(
+                background="#fff1bf",
+                border_color="#d9a817",
+                border_width=3,
+                padding=1,
             )
-            glow = QGraphicsDropShadowEffect(self)
-            glow.setBlurRadius(8)
-            glow.setOffset(0, 0)
-            glow.setColor(QColor("#efc84a"))
-            self.setGraphicsEffect(glow)
+            self.set_card_glow("#efc84a")
         else:
             border_color = glow_color or "#d5cbbb"
-            self.setStyleSheet(
-                f"QPushButton {{ background:#fffaf0; border:2px solid {border_color}; padding:1px; border-radius:{CARD_CORNER_RADIUS}px; }}"
+            self.set_card_style(
+                background="#fffaf0",
+                border_color=border_color,
+                border_width=2,
+                padding=1,
             )
         apply_specialization_glow(self, card)
 
@@ -792,9 +905,13 @@ class WizardCardView(CardButton):
         self.wizard = wizard
         requirements = [(attribute.value, amount) for attribute, amount in wizard.requirements]
         self.set_card_content("魔法师", f"+{wizard.score}", wizard.name, requirements)
-        self.setStyleSheet(
-            f"QPushButton {{ color:{TEXT_COLOR}; background:#fff1bf; border:2px solid #d2a83d; padding:2px; border-radius:{CARD_CORNER_RADIUS}px; }}"
-            "QPushButton:hover { border-color:#a77914; }"
+        self.set_card_style(
+            background="#fff1bf",
+            border_color="#d2a83d",
+            border_width=2,
+            padding=2,
+            text_color=TEXT_COLOR,
+            hover_border_color="#a77914",
         )
 
 
@@ -885,9 +1002,8 @@ class PlayerStatusHoverCard(QFrame):
             f"QLabel#playerHoverStatus {{ color:{TEXT_COLOR}; background:{HOVER_SURFACE_COLOR}; border:1px solid {ORNAMENT_COLOR}; "
             f"border-radius:{CARD_CORNER_RADIUS}px; padding:3px 6px; font-size:10px; }}"
             f"QFrame#playerHoverCardsFrame {{ background:{HOVER_INSET_COLOR}; border:1px solid {ORNAMENT_COLOR}; border-radius:{CARD_CORNER_RADIUS}px; }}"
-            "QScrollArea#playerHoverPurchasedPileScroll { background:transparent; border:0; }"
             f"QWidget#playerHoverCardsContent {{ background:{HOVER_SURFACE_COLOR}; border:1px solid {ORNAMENT_COLOR}; border-radius:0; }}"
-            f"QWidget#playerHoverPileContent {{ background:{HOVER_SURFACE_COLOR}; }}"
+            "QWidget#playerHoverCardStack { background:transparent; border:0; }"
         )
 
         outer = QVBoxLayout(self)
@@ -1009,8 +1125,15 @@ class PlayerStatusHoverCard(QFrame):
         outer.addWidget(cards_frame)
         self.purchased_card_views: list[OwnedCardView] = []
         self.purchased_columns: dict[Attribute, QFrame] = {}
-        self.purchased_column_scrolls: dict[Attribute, QScrollArea] = {}
+        self.purchased_piles: dict[Attribute, QWidget] = {}
         self.purchased_attribute_icons: dict[Attribute, QLabel] = {}
+        self._purchased_signature: tuple | None = None
+        self._purchased_layout_width: int | None = None
+
+        # Decode the five hover-only attribute icons while the game window is
+        # being initialized, rather than on the first opponent hover.
+        for attribute in ATTRIBUTES:
+            attribute_icon_pixmap(attribute, 22, self.devicePixelRatioF())
 
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
@@ -1035,12 +1158,30 @@ class PlayerStatusHoverCard(QFrame):
         label.setObjectName("playerHoverDetail")
         return label
 
+    @staticmethod
+    def purchased_cards_signature(player: Player) -> tuple[tuple[object, ...], ...]:
+        """Fields that affect how the player's owned cards are drawn and piled."""
+        return tuple(
+            (
+                card.card_id,
+                card.level,
+                tuple(attribute.value for attribute in card.attributes),
+                tuple((attribute.value, card.cost.get(attribute, 0)) for attribute in ATTRIBUTES),
+                card.score,
+                card.score_multiplier,
+                card.transformed_from,
+                tuple(sorted(attribute.value for attribute in card.specialization_glows)),
+                chosen_attribute.value if chosen_attribute is not None else None,
+            )
+            for card, chosen_attribute in player.purchased
+        )
+
     def set_player_details(
         self,
         player: Player,
         status: str,
         is_self: bool,
-    ) -> None:
+    ) -> bool:
         self.name_label.setText(player.name)
         self.score_label.setText(f"{player.score}分")
         self.resources_frame.setVisible(not is_self)
@@ -1054,14 +1195,21 @@ class PlayerStatusHoverCard(QFrame):
         self.status_label.setText(f"当前效果：{status or '暂无'}")
         if not is_self:
             self.cards_title.setText(f"已购买宠物卡　{len(player.purchased)}")
+            signature = self.purchased_cards_signature(player)
+            if signature == self._purchased_signature and self.width() == self._purchased_layout_width:
+                self.status_label.setVisible(True)
+                return False
+            self._purchased_signature = signature
+            self._purchased_layout_width = self.width()
             while self.cards_columns_layout.count():
                 item = self.cards_columns_layout.takeAt(0)
                 widget = item.widget()
                 if widget is not None:
+                    widget.hide()
                     widget.deleteLater()
             self.purchased_card_views = []
             self.purchased_columns = {}
-            self.purchased_column_scrolls = {}
+            self.purchased_piles = {}
             self.purchased_attribute_icons = {}
             card_width = min(52, max(20, (self.width() - 90) // len(ATTRIBUTES)))
             card_height = round(card_width * 4 / 3)
@@ -1112,74 +1260,45 @@ class PlayerStatusHoverCard(QFrame):
                 cards = [(card, False) for card in singles[attribute]] + [
                     (card, True) for card in duals[attribute]
                 ]
-                stack_height = card_height if cards else 1
-                if cards:
-                    stack_height += (len(cards) - 1) * reveal_height
+                stack_height = card_height + (len(cards) - 1) * reveal_height if cards else 0
                 tallest_pile = max(tallest_pile, stack_height)
-                stack = QWidget(column)
-                stack.setFixedWidth(card_width + 4)
-                stack.setFixedHeight(stack_height)
-                for index, (card, is_dual) in enumerate(cards):
-                    card_view = OwnedCardView(
-                        card,
-                        dual=is_dual,
-                        parent=stack,
-                        width=card_width,
+                if cards:
+                    stack = QWidget(column)
+                    stack.setObjectName("playerHoverCardStack")
+                    stack.setFixedWidth(card_width + 4)
+                    stack.setFixedHeight(stack_height)
+                    for index, (card, is_dual) in enumerate(cards):
+                        card_view = OwnedCardView(
+                            card,
+                            dual=is_dual,
+                            parent=stack,
+                            width=card_width,
+                        )
+                        card_view.setProperty("pileAttribute", attribute.value)
+                        card_view.setProperty("stackIndex", index)
+                        card_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                        card_view.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                        card_view.move((stack.width() - card_view.width()) // 2, index * reveal_height)
+                        card_view.show()
+                        card_view.raise_()
+                        self.purchased_card_views.append(card_view)
+                    column_layout.addWidget(
+                        stack,
+                        0,
+                        Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
                     )
-                    card_view.setProperty("pileAttribute", attribute.value)
-                    card_view.setProperty("stackIndex", index)
-                    card_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-                    card_view.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-                    card_view.move((stack.width() - card_view.width()) // 2, index * reveal_height)
-                    card_view.show()
-                    card_view.raise_()
-                    self.purchased_card_views.append(card_view)
-                pile_content = QWidget()
-                pile_content.setObjectName("playerHoverPileContent")
-                pile_layout = QHBoxLayout(pile_content)
-                pile_layout.setContentsMargins(0, 0, 0, 0)
-                pile_layout.addStretch(1)
-                pile_layout.addWidget(stack, 0, Qt.AlignmentFlag.AlignTop)
-                pile_layout.addStretch(1)
-                pile_content.setMinimumHeight(stack_height)
-
-                pile_scroll = QScrollArea(column)
-                pile_scroll.setObjectName("playerHoverPurchasedPileScroll")
-                pile_scroll.setWidgetResizable(True)
-                pile_scroll.setFrameShape(QFrame.Shape.NoFrame)
-                pile_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-                # The pile scrolls; its attribute icon remains in the column layout above it.
-                pile_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-                pile_scroll.setWidget(pile_content)
-                column_layout.addWidget(pile_scroll, 1)
-                self.purchased_column_scrolls[attribute] = pile_scroll
+                    self.purchased_piles[attribute] = stack
             self.cards_columns_layout.addStretch(1)
-            scroll_height = min(174, max(74, tallest_pile + 42))
-            # Keep this region shrinkable: the hover panel must fit inside the
-            # game window even when there is little vertical room above/below
-            # the player's status cell. Overflow remains available by scrolling.
-            self.cards_content.setMinimumHeight(min(64, scroll_height))
-            self.cards_content.setMaximumHeight(scroll_height)
-
-            # Keep attribute piles aligned while scrolling any column, just as
-            # in the player's own purchased-card board.
-            column_scrollbars = [
-                area.verticalScrollBar()
-                for area in self.purchased_column_scrolls.values()
-            ]
-            scroll_state = {"syncing": False}
-
-            def sync_hover_pile_scroll(value: int) -> None:
-                if scroll_state["syncing"]:
-                    return
-                scroll_state["syncing"] = True
-                for scrollbar in column_scrollbars:
-                    scrollbar.setValue(min(value, scrollbar.maximum()))
-                scroll_state["syncing"] = False
-
-            for scrollbar in column_scrollbars:
-                scrollbar.valueChanged.connect(sync_hover_pile_scroll)
+            # The hover card grows with its tallest attribute pile. No scroll
+            # viewport may clip the lower cards: every purchased card remains
+            # visible in this compact, overlapped stack.
+            cards_content_height = max(64, tallest_pile + 38)
+            self.cards_content.setMinimumHeight(cards_content_height)
+            self.cards_content.setMaximumHeight(cards_content_height)
+            self.cards_content.updateGeometry()
+            self.cards_frame.updateGeometry()
         self.status_label.setVisible(True)
+        return not is_self
 
 
 class MagicGemsQtApp(QMainWindow):
@@ -1207,6 +1326,10 @@ class MagicGemsQtApp(QMainWindow):
         self.ai_battle, self.ai_interval = ai_battle, max(0.0, interval)
         self.ai_difficulty = "hard"
         self.game = Game(create_state(self.create_players(), build_decks(seed), seed))
+        self.displayed_turn_key = (
+            self.game.state.round_number,
+            self.game.state.current_player,
+        )
         self.selected_card: PetCard | None = None
         self.resource_selection: list[Attribute] = []
         self.resource_notice = ""
@@ -1247,8 +1370,11 @@ class MagicGemsQtApp(QMainWindow):
         self.turn_banner_text = "你的回合！"
         self.last_announced_turn: tuple[int, int] | None = None
         self.player_status_labels: dict[int, QWidget] = {}
+        self.player_status_heading_labels: dict[int, QLabel] = {}
+        self.player_status_effect_labels: dict[int, QLabel] = {}
         self.end_dialog_shown = False
         self.end_dialog_pending = False
+        self.end_overlay: QWidget | None = None
         self.setWindowTitle("洛克王国：魔法宝石")
         self.setFixedSize(self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
         self.setStyleSheet(
@@ -1268,6 +1394,9 @@ class MagicGemsQtApp(QMainWindow):
         self.build_ui(self.game_page)
         self.player_hover_card = PlayerStatusHoverCard(self)
         self.player_hover_card.installEventFilter(self)
+        # Child widgets become visible with the main window unless explicitly
+        # hidden. The hover card must appear only after entering a player row.
+        self.player_hover_card.hide()
         self.player_hover_hide_timer = QTimer(self)
         self.player_hover_hide_timer.setSingleShot(True)
         self.player_hover_hide_timer.setInterval(180)
@@ -1895,10 +2024,13 @@ class MagicGemsQtApp(QMainWindow):
         background = "#f4d484" if card is self.selected_card else "#dceecf" if can_afford else "#fff6e8"
         border_color = specialization_glow_color(card) or "#b8b8b8"
         text_color = TEXT_COLOR
-        hover_style = " QPushButton:hover { border-color:#6b8799; }"
-        button.setStyleSheet(
-            f"QPushButton {{ color:{text_color}; text-align:center; padding:2px; "
-            f"background:{background}; border:2px solid {border_color}; border-radius:{CARD_CORNER_RADIUS}px; }}{hover_style}"
+        button.set_card_style(
+            background=background,
+            border_color=border_color,
+            border_width=2,
+            padding=2,
+            text_color=text_color,
+            hover_border_color="#6b8799",
         )
         palette = button.palette()
         palette.setColor(QPalette.ColorRole.ButtonText, QColor(text_color))
@@ -2348,39 +2480,65 @@ class MagicGemsQtApp(QMainWindow):
             self.cancel_button.setEnabled(cancel_enabled)
 
     def render_players(self) -> None:
-        if hasattr(self, "player_hover_hide_timer"):
-            self.hide_player_status_hover()
-        self.clear_section_body(self.players_layout)
         state = self.game.state
-        self.player_status_labels = {}
-        for index, player in enumerate(state.players):
-            frame = QFrame()
-            frame.setFixedHeight(25)
-            frame.setObjectName("playerStatusRow")
-            is_current = index == state.current_player
+        displayed_current_player = getattr(
+            self, "displayed_turn_key", (state.round_number, state.current_player)
+        )[1]
+
+        def refresh_row(index: int, frame: QWidget, heading: QLabel, effect_label: QLabel) -> None:
+            player = state.players[index]
+            is_current = index == displayed_current_player
             row_background = PLAYER_CURRENT_COLOR if is_current else PLAYER_STATUS_COLOR
             border_width = 2 if is_current else 1
             frame.setStyleSheet(
                 f"QFrame#playerStatusRow {{ background:{row_background};border:{border_width}px solid {ORNAMENT_COLOR};border-radius:{CARD_CORNER_RADIUS}px; }}"
                 f"QFrame#playerStatusRow:hover {{ background:{PLAYER_CURRENT_COLOR};border-color:{TEXT_COLOR}; }}"
             )
+            heading.setText(
+                f"{'▶ ' if is_current else ''}{player.name}　{player.score}分"
+            )
+            effects = self.current_player_effects(player)
+            effect_text = "、".join(effects) if effects else "无"
+            effect_label.setText(f"当前效果：{effect_text}")
+
+        expected_indexes = set(range(len(state.players)))
+        if (
+            set(self.player_status_labels) == expected_indexes
+            and set(self.player_status_heading_labels) == expected_indexes
+            and set(self.player_status_effect_labels) == expected_indexes
+        ):
+            for index in range(len(state.players)):
+                refresh_row(
+                    index,
+                    self.player_status_labels[index],
+                    self.player_status_heading_labels[index],
+                    self.player_status_effect_labels[index],
+                )
+            return
+
+        # Only construct these rows once. Keeping their widgets stable means
+        # updating the active turn won't invalidate an open hover-card anchor.
+        self.clear_section_body(self.players_layout)
+        self.player_status_labels = {}
+        self.player_status_heading_labels = {}
+        self.player_status_effect_labels = {}
+        for index, player in enumerate(state.players):
+            frame = QFrame()
+            frame.setFixedHeight(25)
+            frame.setObjectName("playerStatusRow")
             frame.setProperty("playerStatusIndex", index)
             frame.installEventFilter(self)
             frame_layout = QHBoxLayout(frame)
             frame_layout.setContentsMargins(4, 1, 4, 1)
             frame_layout.setSpacing(4)
 
-            heading = QLabel(
-                f"{'▶ ' if index == state.current_player else ''}{player.name}　{player.score}分"
-            )
+            heading = QLabel()
             heading.setFixedHeight(21)
             heading.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             heading.setStyleSheet("background:transparent;border:0;font-size:11px;")
             frame_layout.addWidget(heading, 1)
 
-            effects = self.current_player_effects(player)
-            effect_text = "、".join(effects) if effects else "无"
-            effect_label = QLabel(f"当前效果：{effect_text}")
+            effect_label = QLabel()
             effect_label.setObjectName("playerStatusEffect")
             effect_label.setFixedHeight(21)
             effect_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -2392,6 +2550,9 @@ class MagicGemsQtApp(QMainWindow):
 
             self.players_layout.addWidget(frame)
             self.player_status_labels[index] = frame
+            self.player_status_heading_labels[index] = heading
+            self.player_status_effect_labels[index] = effect_label
+            refresh_row(index, frame, heading, effect_label)
 
     def eventFilter(self, watched, event) -> bool:
         event_type = event.type()
@@ -2439,15 +2600,28 @@ class MagicGemsQtApp(QMainWindow):
             "、".join(statuses) if statuses else "无",
             player_index == 0,
         )
-        # Recalculate after rebuilding the five purchased-card columns, then
-        # size and position from the settled layout for the first visible frame.
+        # Finish all nested geometry calculations before measuring or showing
+        # the popup. This is intentionally done on every opening: a hidden
+        # QWidget can retain stale size hints even when its data was cached.
         self.player_hover_card.ensurePolished()
-        if self.player_hover_card.layout() is not None:
-            self.player_hover_card.layout().activate()
+        self.player_hover_card.cards_content.ensurePolished()
+        for column in self.player_hover_card.purchased_columns.values():
+            column.ensurePolished()
+            if column.layout() is not None:
+                column.layout().activate()
+        for card_view in self.player_hover_card.purchased_card_views:
+            card_view.ensurePolished()
         if self.player_hover_card.cards_columns_layout is not None:
             self.player_hover_card.cards_columns_layout.activate()
+        if self.player_hover_card.cards_content.layout() is not None:
+            self.player_hover_card.cards_content.layout().activate()
+        if self.player_hover_card.cards_frame.layout() is not None:
+            self.player_hover_card.cards_frame.layout().activate()
+        if self.player_hover_card.layout() is not None:
+            self.player_hover_card.layout().activate()
         self.player_hover_card.adjustSize()
-
+        if self.player_hover_card.layout() is not None:
+            self.player_hover_card.layout().activate()
         anchor_top_left = anchor.mapTo(self, QPoint(0, 0))
         popup_size = self.player_hover_card.size()
         x = anchor_top_left.x()
@@ -2471,7 +2645,52 @@ class MagicGemsQtApp(QMainWindow):
         self.player_hover_card.hide()
         self.player_hover_anchor = None
 
+    def refresh_open_player_status_hover(self) -> None:
+        """Keep an open player detail card synchronized with the game state."""
+        anchor = self.player_hover_anchor
+        if anchor is None or self.player_hover_card.isHidden():
+            return
+        player_index = anchor.property("playerStatusIndex")
+        if player_index is None:
+            return
+        player_index = int(player_index)
+        if self.player_status_labels.get(player_index) is not anchor:
+            return
+        # Reuse the normal layout path so changed card piles can grow/shrink the
+        # popup and its position remains aligned to the same status row.
+        self.show_player_status_hover(anchor, player_index)
+
     def refresh(self) -> None:
+        state = self.game.state
+        turn_key = (state.round_number, state.current_player)
+        waiting_for_turn_banner = (
+            self.game_started
+            and not state.finished
+            and turn_key != self.last_announced_turn
+        ) or self.turn_banner_pending
+        if state.finished or not waiting_for_turn_banner:
+            self.displayed_turn_key = turn_key
+            self.update_turn_status_bar()
+        self.render_market()
+        self.render_resource_zones()
+        self.render_reserved()
+        self.render_purchased()
+        self.render_controls()
+        self.render_players()
+        self.refresh_open_player_status_hover()
+        if state.pending_specializations:
+            owner = state.pending_specializations[0].player_index
+            if owner == 0 and not self.ai_battle and not self.specialization_scheduled:
+                self.schedule_specialization_prompt()
+            elif not state.finished:
+                self.ai_timer.start(round(self.ai_interval * 1000))
+        elif not state.finished and (self.ai_battle or state.current_player != 0):
+            self.ai_timer.start(round(self.ai_interval * 1000))
+        else:
+            self.ai_timer.stop()
+
+    def update_turn_status_bar(self) -> None:
+        """Update only the header turn indicator; leave player hover UI untouched."""
         state = self.game.state
         if state.finished:
             winners = "、".join(player.name for player in self.game.winners())
@@ -2490,22 +2709,6 @@ class MagicGemsQtApp(QMainWindow):
                 f"color:{TEXT_COLOR};font-size:12px;font-weight:bold;background:#ffe8d3;"
                 f"border:1px solid {ORNAMENT_COLOR};border-radius:4px;padding:2px 8px;"
             )
-        self.render_market()
-        self.render_resource_zones()
-        self.render_reserved()
-        self.render_purchased()
-        self.render_controls()
-        self.render_players()
-        if state.pending_specializations:
-            owner = state.pending_specializations[0].player_index
-            if owner == 0 and not self.ai_battle and not self.specialization_scheduled:
-                self.schedule_specialization_prompt()
-            elif not state.finished:
-                self.ai_timer.start(round(self.ai_interval * 1000))
-        elif not state.finished and (self.ai_battle or state.current_player != 0):
-            self.ai_timer.start(round(self.ai_interval * 1000))
-        else:
-            self.ai_timer.stop()
 
     def select_card(self, card: PetCard) -> None:
         if self.interaction_locked or self.resource_selection or self.game.state.current_player != 0 or self.game.state.finished or self.game.state.pending_specializations or self.ai_battle:
@@ -3213,8 +3416,11 @@ class MagicGemsQtApp(QMainWindow):
         )
         card_overlay.setMinimumSize(1, 1)
         card_overlay.setMaximumSize(1000, 1000)
-        card_overlay.setStyleSheet(
-            f"QPushButton {{ background:#fff5df; border:2px solid #b8b8b8; padding:4px; border-radius:{CARD_CORNER_RADIUS}px; }}"
+        card_overlay.set_card_style(
+            background="#fff5df",
+            border_color="#b8b8b8",
+            border_width=2,
+            padding=4,
         )
         card_start = card_event.get("start", QRect())
         if not card_start.isValid() or card_start.width() <= 0 or card_start.height() <= 0:
@@ -3512,7 +3718,13 @@ class MagicGemsQtApp(QMainWindow):
             )
             overlay.setMinimumSize(1, 1)
             overlay.setMaximumSize(1000, 1000)
-            overlay.setStyleSheet(self.impact_card_style(event))
+            overlay.set_card_style(
+                background="#fff5df",
+                border_color="#b8b8b8",
+                border_width=4 if event["kind"] in ("burn", "burn-in-place", "status-impact") else 2,
+                padding=4,
+                text_color="#252525",
+            )
             if event["kind"] in ("acquire", "reserve-acquire", "transfer"):
                 target = event.get("target", QRect(center.x() - 38, center.y() - 50, 76, 100))
                 if (
@@ -3998,9 +4210,13 @@ class MagicGemsQtApp(QMainWindow):
         self.wizard_animation_running = True
         overlay = WizardCardView(wizard, self, width=70)
         overlay.setObjectName("wizardAcquisitionOverlay")
-        overlay.setStyleSheet(
-            "QPushButton#wizardAcquisitionOverlay { color:#493516; background:#fff1bf; "
-            f"border:4px solid #d2a83d; padding:4px; border-radius:{CARD_CORNER_RADIUS}px; }}"
+        overlay.set_card_style(
+            background="#fff1bf",
+            border_color="#d2a83d",
+            border_width=4,
+            padding=4,
+            text_color="#493516",
+            object_name="wizardAcquisitionOverlay",
         )
         overlay.setMinimumSize(1, 1)
         overlay.setMaximumSize(1000, 1000)
@@ -4100,6 +4316,10 @@ class MagicGemsQtApp(QMainWindow):
             return
         self.turn_banner_pending = False
         self.turn_animation_running = True
+        state = self.game.state
+        self.displayed_turn_key = (state.round_number, state.current_player)
+        self.render_players()
+        self.update_turn_status_bar()
         center = self.rect().center()
         notice = QLabel(self.turn_banner_text, self)
         notice.setObjectName("turnNoticeOverlay")
@@ -4170,7 +4390,83 @@ class MagicGemsQtApp(QMainWindow):
             return
         self.end_dialog_pending = False
         self.end_dialog_shown = True
-        QMessageBox.information(self, "对局结束", "胜者：" + "、".join(player.name for player in self.game.winners()))
+        winners = self.game.winners()
+        winner_names = "、".join(player.name for player in winners)
+        winner_scores = "　·　".join(f"{player.name} {player.score}分" for player in winners)
+
+        overlay = QWidget(self.game_page)
+        overlay.setObjectName("endGameOverlay")
+        overlay.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        overlay.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        overlay.setGeometry(self.game_page.rect())
+        overlay.setStyleSheet(
+            "QWidget#endGameOverlay { background:rgba(35, 20, 19, 165); }"
+            f"QFrame#endGamePanel {{ background:{PANEL_COLOR}; border:3px solid {ORNAMENT_COLOR}; "
+            f"border-radius:{CARD_CORNER_RADIUS + 5}px; }}"
+            f"QLabel#endGameTitle {{ color:{PANEL_COLOR}; background:{TEXT_COLOR}; "
+            f"border:1px solid {ORNAMENT_COLOR}; border-radius:{CARD_CORNER_RADIUS}px; "
+            "font-size:22px; font-weight:bold; padding:8px; }"
+            f"QLabel#endGameWinner {{ color:{TEXT_COLOR}; background:transparent; border:0; "
+            "font-size:20px; font-weight:bold; }"
+            f"QLabel#endGameScore {{ color:{TEXT_COLOR}; background:{HOVER_SURFACE_COLOR}; "
+            f"border:1px solid {ORNAMENT_COLOR}; border-radius:{CARD_CORNER_RADIUS}px; "
+            "font-size:13px; padding:8px; }"
+            f"QPushButton#endGameButton {{ color:{TEXT_COLOR}; background:{HOVER_SURFACE_COLOR}; "
+            f"border:2px solid {ORNAMENT_COLOR}; border-radius:{CARD_CORNER_RADIUS}px; "
+            "font-size:13px; font-weight:bold; padding:7px 16px; }"
+            f"QPushButton#endGameButton:hover {{ background:{PLAYER_CURRENT_COLOR}; }}"
+        )
+        overlay_layout = QVBoxLayout(overlay)
+        overlay_layout.setContentsMargins(18, 18, 18, 18)
+        overlay_layout.addStretch(1)
+        panel = QFrame(overlay)
+        panel.setObjectName("endGamePanel")
+        panel.setFixedWidth(440)
+        panel.setMinimumHeight(240)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(20, 18, 20, 18)
+        panel_layout.setSpacing(14)
+
+        title = QLabel("对局结束")
+        title.setObjectName("endGameTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        panel_layout.addWidget(title)
+        winner = QLabel(f"{winner_names} 获胜！")
+        winner.setObjectName("endGameWinner")
+        winner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        winner.setWordWrap(True)
+        panel_layout.addWidget(winner)
+        score = QLabel(winner_scores)
+        score.setObjectName("endGameScore")
+        score.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        score.setWordWrap(True)
+        panel_layout.addWidget(score)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        continue_button = QPushButton("返回战局")
+        continue_button.setObjectName("endGameButton")
+        continue_button.clicked.connect(self.dismiss_end_dialog)
+        restart_button = QPushButton("重新开始")
+        restart_button.setObjectName("endGameButton")
+        restart_button.clicked.connect(self.restart)
+        buttons.addWidget(continue_button)
+        buttons.addWidget(restart_button)
+        panel_layout.addLayout(buttons)
+
+        overlay_layout.addWidget(panel, 0, Qt.AlignmentFlag.AlignHCenter)
+        overlay_layout.addStretch(1)
+        panel_layout.activate()
+        overlay_layout.activate()
+        self.end_overlay = overlay
+        overlay.show()
+        overlay.raise_()
+
+    def dismiss_end_dialog(self) -> None:
+        if self.end_overlay is not None:
+            self.end_overlay.hide()
+            self.end_overlay.deleteLater()
+            self.end_overlay = None
 
     def play_ai_turn(self) -> None:
         if self.has_active_animations():
@@ -4246,6 +4542,7 @@ class MagicGemsQtApp(QMainWindow):
             self.wizard_animation_notice = None
         self.wizard_animation_queue.clear()
         self.wizard_animation_running = False
+        self.dismiss_end_dialog()
         self.end_dialog_pending = False
         self.end_dialog_shown = False
         self.specialization_scheduled = False

@@ -72,6 +72,34 @@ def test_action_log_uses_black_for_normal_entries_and_preserves_effect_colors(ga
     assert effect_entry[1] == TEXT_COLOR
 
 
+def test_game_end_uses_in_game_overlay(game_window):
+    window = game_window
+    window.game.state.players[0].score = 18
+    window.game.state.finished = True
+
+    window.show_end_dialog()
+
+    overlay = window.end_overlay
+    assert overlay is not None
+    assert overlay.parentWidget() is window
+    assert not overlay.isHidden()
+    winner_label = overlay.findChild(QLabel, "endGameWinner")
+    assert winner_label is not None
+    assert window.game.state.players[0].name in winner_label.text()
+
+
+def test_player_hover_card_is_hidden_until_a_player_row_is_hovered(game_window):
+    window = game_window
+    window.show()
+    QApplication.processEvents()
+
+    assert window.player_hover_card.isHidden()
+
+    anchor = window.player_status_labels[1]
+    window.show_player_status_hover(anchor, 1)
+    assert not window.player_hover_card.isHidden()
+
+
 def test_card_selection_switches_between_market_and_reserved_and_toggles(game_window):
     window = game_window
     market_card = next(
@@ -209,12 +237,7 @@ def test_other_player_hover_shows_resources_wizards_effects_and_purchased_cards(
     assert "下张免付费" in hover_card.status_label.text()
     assert hover_card.cards_title.text() == "已购买宠物卡　3"
     assert set(hover_card.purchased_columns) == set(Attribute)
-    assert set(hover_card.purchased_column_scrolls) == set(Attribute)
-    assert all(
-        area.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        and area.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        for area in hover_card.purchased_column_scrolls.values()
-    )
+    assert set(hover_card.purchased_piles) == {Attribute.WATER, Attribute.GRASS}
     column_widths = {column.width() for column in hover_card.purchased_columns.values()}
     assert len(column_widths) == 1
     assert next(iter(column_widths)) == hover_card.purchased_card_views[0].width() + 10
@@ -232,7 +255,8 @@ def test_other_player_hover_shows_resources_wizards_effects_and_purchased_cards(
         "OPP-01", "OPP-G1", "OPP-DG"
     ]
     assert all(
-        f"border-radius:{CARD_CORNER_RADIUS}px" in view.styleSheet()
+        f"border-radius:{round(CARD_CORNER_RADIUS * view.height() / CardButton.STYLE_REFERENCE_HEIGHT)}px"
+        in view.styleSheet()
         for view in hover_card.purchased_card_views
     )
     grass_pile = [
@@ -241,7 +265,50 @@ def test_other_player_hover_shows_resources_wizards_effects_and_purchased_cards(
     ]
     assert [view.card_id for view in grass_pile] == ["OPP-G1", "OPP-DG"]
     assert [view.property("stackIndex") for view in grass_pile] == [0, 1]
+    grass_stack = hover_card.purchased_piles[Attribute.GRASS]
+    assert grass_stack.objectName() == "playerHoverCardStack"
+    assert "QWidget#playerHoverCardStack { background:transparent; border:0; }" in hover_card.styleSheet()
+    assert all(view.geometry().bottom() < grass_stack.height() for view in grass_pile)
+    assert hover_card.cards_content.height() >= grass_stack.height() + 38
     assert hover_card.width() == frame.width()
+
+
+def test_other_player_hover_reuses_unchanged_card_views_and_refreshes_after_purchase(game_window):
+    window = game_window
+    player = window.game.state.players[1]
+    player.purchased.append((
+        PetCard("HOVER-CACHE-01", 1, (Attribute.WATER,), {Attribute.FIRE: 1}, 1),
+        None,
+    ))
+    window.render_players()
+    frame = window.player_status_labels[1]
+
+    window.show_player_status_hover(frame, 1)
+    hover_card = window.player_hover_card
+    initial_views = tuple(hover_card.purchased_card_views)
+    assert len(initial_views) == 1
+
+    window.show_player_status_hover(frame, 1)
+    assert len(hover_card.purchased_card_views) == 1
+    assert hover_card.purchased_card_views[0] is initial_views[0]
+
+    player.purchased.append((
+        PetCard("HOVER-CACHE-02", 1, (Attribute.FIRE,), {Attribute.WATER: 1}, 1),
+        None,
+    ))
+    player.resources[Attribute.WATER] = 3
+    window.refresh()
+    assert not hover_card.isHidden()
+    assert window.player_hover_anchor is frame
+    assert len(hover_card.purchased_card_views) == 2
+    assert hover_card.purchased_card_views[0] is not initial_views[0]
+    assert hover_card.resource_counts[Attribute.WATER].text() == "3"
+
+    updated_views = tuple(hover_card.purchased_card_views)
+    player.resources[Attribute.WATER] = 4
+    window.refresh()
+    assert hover_card.resource_counts[Attribute.WATER].text() == "4"
+    assert tuple(hover_card.purchased_card_views) == updated_views
 
 
 def test_owned_wizard_cards_are_smaller_and_scroll_horizontally(game_window):
@@ -360,7 +427,7 @@ def test_purchased_attribute_icons_stay_fixed_when_card_piles_scroll(game_window
     assert last_card.mapToGlobal(QPoint(0, 0)).y() < card_before.y()
 
 
-def test_other_player_hover_panel_fits_short_window_on_first_show(game_window, monkeypatch):
+def test_other_player_hover_panel_loads_all_cards_on_first_show(game_window):
     window = game_window
     window.start_game_with_difficulty("hard")
     player = window.game.state.players[1]
@@ -376,26 +443,22 @@ def test_other_player_hover_panel_fits_short_window_on_first_show(game_window, m
     window.show()
     QTest.qWait(30)
 
-    # Simulate a game viewport with little vertical room, as when the status
-    # cell is near the edge of a compact display.
-    monkeypatch.setattr(
-        window, "rect", lambda: QRect(0, 0, window.width(), 260)
-    )
     anchor = window.player_status_labels[1]
     window.show_player_status_hover(anchor, 1)
-    QTest.qWait(20)
 
     popup = window.player_hover_card
-    assert popup.height() <= 252
+    assert popup.height() < window.height()
     assert popup.y() >= 4
-    assert popup.geometry().bottom() <= 255
-    assert popup.cards_content.height() < 174
-    fire_scroll = popup.purchased_column_scrolls[Attribute.FIRE]
-    assert fire_scroll.verticalScrollBar().maximum() > 0
-    assert all(
-        area.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        for area in popup.purchased_column_scrolls.values()
+    assert popup.geometry().bottom() <= window.rect().bottom() - 4
+    fire_stack = popup.purchased_piles[Attribute.FIRE]
+    assert fire_stack.height() == (
+        popup.purchased_card_views[0].height() + 14 * 16
     )
+    assert all(
+        view.geometry().bottom() < fire_stack.height()
+        for view in popup.purchased_card_views
+    )
+    assert popup.cards_content.height() >= fire_stack.height() + 38
     fire_icon = popup.purchased_attribute_icons[Attribute.FIRE]
     fire_icon_position = fire_icon.mapToGlobal(QPoint(0, 0))
     first_pile_card = popup.purchased_card_views[0]
@@ -732,7 +795,13 @@ def test_fire_and_dark_impact_move_then_tint_text_then_fade(game_window, kind, c
     game_window.impact_animation_queue = [event]
     game_window.play_next_impact_animation()
     overlay = game_window.impact_animation_overlay
-    assert overlay.styleSheet() == game_window.impact_card_style(event)
+    expected_scale = overlay.height() / CardButton.STYLE_REFERENCE_HEIGHT
+    expected_border = max(
+        1,
+        int((4 if kind in ("burn", "burn-in-place", "status-impact") else 2) * expected_scale),
+    )
+    assert f"border:{expected_border}px solid #b8b8b8" in overlay.styleSheet()
+    assert f"border-radius:{round(CARD_CORNER_RADIUS * expected_scale)}px" in overlay.styleSheet()
     assert overlay.display_card_id == "TEST"
     assert overlay.graphicsEffect().opacity() >= 0.95
 
@@ -752,7 +821,13 @@ def test_fire_and_dark_impact_move_then_tint_text_then_fade(game_window, kind, c
 
     assert fade_animations
     assert any(animation.endValue() == 0.0 for animation in fade_animations)
-    assert overlay.styleSheet() == style
+    expected_scale = overlay.height() / CardButton.STYLE_REFERENCE_HEIGHT
+    expected_border = max(
+        1,
+        int((4 if kind in ("burn", "burn-in-place", "status-impact") else 2) * expected_scale),
+    )
+    assert f"border:{expected_border}px solid #b8b8b8" in overlay.styleSheet()
+    assert f"border-radius:{round(CARD_CORNER_RADIUS * expected_scale)}px" in overlay.styleSheet()
     assert overlay.display_card_id == "TEST"
     assert 0.0 < overlay.impactContentOpacity < 1.0
     assert 0 < overlay.impactTint.alpha() < 255
