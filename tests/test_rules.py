@@ -3,7 +3,7 @@ import pytest
 from src.cards import all_cards, build_decks
 from src.game import Action, Game
 from src.models import ATTRIBUTES, Attribute, Player
-from src.rules import RuleError, create_state, payment_for
+from src.rules import RuleError, buy_card, create_state, payment_for, reserve_card
 
 
 def game() -> Game:
@@ -37,6 +37,51 @@ def test_reserve_gets_light_and_buy_returns_it():
     current.execute(Action("reserve", card=card))
     assert current.state.players[0].light == 1
     assert card in current.state.players[0].reserved
+    assert current.state.current_player == 1
+    assert len(current.state.market.cards[card.level]) == 5
+
+
+def test_reserving_leaves_market_vacant_until_turn_rotation_refills_it():
+    current = game()
+    state = current.state
+    card = state.market.cards[1][0]
+    deck_count = len(state.decks[card.level])
+
+    reserve_card(state, state.players[0], card)
+
+    assert len(state.market.cards[card.level]) == 4
+    assert len(state.decks[card.level]) == deck_count
+
+
+def test_buy_does_not_refill_market_inside_the_purchase_action():
+    current = game()
+    state = current.state
+    card = state.market.cards[1][0]
+    deck_count = len(state.decks[card.level])
+    player = state.players[0]
+    for attribute, amount in card.cost.items():
+        player.resources[attribute] = amount
+
+    buy_card(state, player, card)
+
+    assert len(state.market.cards[card.level]) == 4
+    assert len(state.decks[card.level]) == deck_count
+
+
+def test_market_refills_when_the_next_turn_begins():
+    current = game()
+    state = current.state
+    card = state.market.cards[1][0]
+    deck_count = len(state.decks[card.level])
+    player = state.players[0]
+    for attribute, amount in card.cost.items():
+        player.resources[attribute] = amount
+
+    current.execute(Action("buy", card=card))
+
+    assert state.current_player == 1
+    assert len(state.market.cards[card.level]) == 5
+    assert len(state.decks[card.level]) == deck_count - 1
 
 
 def test_dual_discount_is_selected_per_purchase():
@@ -51,15 +96,20 @@ def test_dual_discount_is_selected_per_purchase():
     assert payment.light == 0
 
 
-def test_end_trigger_finishes_after_full_round():
+def test_reaching_18_points_ends_the_game_immediately():
     current = game()
-    current.state.players[0].score = 18
-    current.execute(Action("different", attributes=(Attribute.WATER, Attribute.FIRE, Attribute.GRASS)))
+    player = current.state.players[0]
+    player.score = 17
+    card = current.state.market.cards[1][0]
+    card.score = 1
+    card.cost.clear()
+
+    current.execute(Action("buy", card=card))
+
+    assert player.score == 18
     assert current.state.end_triggered
-    assert not current.state.finished
-    for _ in range(3):
-        current.execute(Action("different", attributes=(Attribute.WATER, Attribute.FIRE, Attribute.GRASS)))
     assert current.state.finished
+    assert current.state.current_player == 0
 
 
 def test_empty_market_also_finishes_after_full_round():

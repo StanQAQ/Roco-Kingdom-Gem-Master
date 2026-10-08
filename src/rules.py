@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import random
 
 from .models import ATTRIBUTES, Attribute, GameState, Market, PetCard, Player
+from .wizards import MAGICIAN_CARDS
 
 
 class RuleError(ValueError):
@@ -72,7 +73,7 @@ def payment_for(player: Player, card: PetCard, selected_dual: list[Attribute] | 
         available_text = " ".join(f"{attribute.value}{player.resources[attribute]}" for attribute in required_cost)
         raise RuleError(
             f"资源不足：{card.card_id} 折扣后需要 {required_text}，当前为 {available_text}，"
-            f"还需要光系 {light_needed}，已有光系 {player.light + player.temporary_light}"
+            f"还需要贤者碎晶 {light_needed}，已有贤者碎晶 {player.light + player.temporary_light}"
         )
     ordinary_light = min(player.light, light_needed)
     return Payment(normal, ordinary_light, light_needed - ordinary_light)
@@ -84,19 +85,30 @@ def _return_payment(state: GameState, payment: Payment) -> None:
     state.light_pool += payment.light
 
 
-def _remove_market_card(state: GameState, card: PetCard) -> None:
+def refill_market(state: GameState) -> None:
+    """Fill vacant public-market slots at the start of a player's turn."""
+    for level in (1, 2, 3):
+        _refill_market_level(state, level)
+
+
+def _refill_market_level(state: GameState, level: int) -> None:
+    while len(state.market.cards[level]) < 5 and state.decks[level]:
+        state.market.cards[level].append(state.decks[level].pop())
+
+
+def _remove_market_card(state: GameState, card: PetCard, *, refill: bool = True) -> None:
     cards = state.market.cards[card.level]
     if card not in cards:
         raise RuleError("市场中没有这张宠物")
     cards.remove(card)
-    if len(cards) < 5 and state.decks[card.level]:
-        cards.append(state.decks[card.level].pop())
+    if refill:
+        _refill_market_level(state, card.level)
 
 
 def buy_card(state: GameState, player: Player, card: PetCard, selected_dual: list[Attribute] | None = None) -> None:
     payment = payment_for(player, card, selected_dual)
     if card in state.market.cards[card.level]:
-        _remove_market_card(state, card)
+        _remove_market_card(state, card, refill=False)
     elif card in player.reserved:
         player.reserved.remove(card)
     else:
@@ -106,8 +118,11 @@ def buy_card(state: GameState, player: Player, card: PetCard, selected_dual: lis
     player.light -= payment.light
     player.temporary_light -= payment.temporary_light
     _return_payment(state, payment)
+    if player.next_purchase_score_doubled:
+        card.score_multiplier *= 2
+        player.next_purchase_score_doubled = False
     player.purchased.append((card, None))
-    player.score += card.score
+    player.score += card.effective_score
     if player.next_purchase_free:
         player.next_purchase_free = False
 
@@ -118,9 +133,9 @@ def reserve_card(state: GameState, player: Player, card: PetCard) -> None:
     if card not in state.market.cards[card.level]:
         raise RuleError("只能预购公共市场中的宠物")
     if state.light_pool <= 0:
-        raise RuleError("公共光系资源不足")
+        raise RuleError("公共贤者碎晶不足")
     _check_capacity(player, 1)
-    _remove_market_card(state, card)
+    _remove_market_card(state, card, refill=False)
     player.reserved.append(card)
     player.light += 1
     state.light_pool -= 1
@@ -128,11 +143,18 @@ def reserve_card(state: GameState, player: Player, card: PetCard) -> None:
 
 def create_state(players: list[Player], decks: dict[int, list[PetCard]], seed: int | None = None) -> GameState:
     market_cards = {level: [decks[level].pop() for _ in range(min(5, len(decks[level])))] for level in (1, 2, 3)}
+    rng = random.Random(seed)
+    wizard_deck = list(MAGICIAN_CARDS)
+    rng.shuffle(wizard_deck)
+    wizard_market = wizard_deck[:3]
+    wizard_deck = wizard_deck[3:]
     return GameState(
         players,
         {attribute: 7 for attribute in ATTRIBUTES},
         5,
         Market(market_cards),
         decks,
-        rng=random.Random(seed),
+        wizard_market=wizard_market,
+        wizard_deck=wizard_deck,
+        rng=rng,
     )

@@ -19,13 +19,18 @@ def show(game: Game) -> None:
     if state.pending_specializations:
         print("待结算：" + specialization_name(state.pending_specializations[0]))
     print("公共资源：" + " ".join(f"{a.value}{state.resource_pool[a]}" for a in ATTRIBUTES) + f" 光{state.light_pool}")
+    print("魔法师市场：" + (" | ".join(f"{card.name}({card.requirement_text})" for card in state.wizard_market) or "空"))
     for level in (1, 2, 3):
-        print(f"{level}级市场：" + " | ".join(f"{card.card_id}({card.cost_text()}=>{card.score})" for card in state.market.cards[level]))
+        print(f"{level}级市场：" + " | ".join(f"{card.card_id}({card.cost_text()}=>{card.effective_score})" for card in state.market.cards[level]))
     for player in state.players:
         discounts = " ".join(f"{a.value}{n}" for a, n in player.permanent_discounts.items() if n)
+        wizard_cards = "、".join(card.name for card in player.wizard_cards) or "无"
         print(
             f"{player.name}: 分数{player.score} 资源{player.resource_count}/{player.resource_capacity} "
             f"折扣[{discounts or '-'}] 预购{len(player.reserved)}"
+            f" 魔法师卡{len(player.wizard_cards)}/10[{wizard_cards}]"
+            f"{' 下张分数×2' if player.next_purchase_score_doubled else ''}"
+            f"{' 攻击免疫待触发' if player.next_attack_immune else ''}"
         )
 
 
@@ -42,7 +47,9 @@ def run(seed: int, ai_only: bool, interval: float = 0.0) -> None:
         else:
             action = read_action(game)
         try:
-            game.execute(action)
+            messages = game.execute(action)
+            for message in messages:
+                print(message)
         except (RuleError, ValueError) as error:
             print(f"操作无效：{error}")
         if ai_only and interval > 0:

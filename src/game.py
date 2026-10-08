@@ -3,8 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .models import Attribute, GameState, PetCard, Player
-from .rules import RuleError, buy_card, reserve_card, take_different, take_same
+from .rules import RuleError, buy_card, refill_market, reserve_card, take_different, take_same
 from .specializations import detect_specializations, resolve_specialization
+from .wizards import award_eligible_wizard_cards
+
+VICTORY_SCORE = 18
 
 
 @dataclass(frozen=True)
@@ -33,10 +36,11 @@ class Game:
                 card=action.card,
                 target_player=action.target_player,
             )
+            messages = [message]
             self.state.pending_specializations.pop(0)
             if not self.state.pending_specializations:
-                self._finish_turn()
-            return [message]
+                messages.extend(self._finish_turn())
+            return messages
         if action.kind == "specialization":
             raise RuleError("当前没有待结算的属性专精")
 
@@ -68,16 +72,30 @@ class Game:
                 for effect in effects
             )
         if not self.state.pending_specializations:
-            self._finish_turn()
+            messages.extend(self._finish_turn())
         return messages
 
-    def _finish_turn(self) -> None:
+    def _finish_turn(self) -> list[str]:
+        player = self.state.current()
+        acquired_wizards = award_eligible_wizard_cards(player, self.state.wizard_market)
+        messages = [f"获得魔法师卡【{wizard.name}】（+{wizard.score}分）" for wizard in acquired_wizards]
+        for wizard in acquired_wizards:
+            self.state.wizard_market.remove(wizard)
+            if self.state.wizard_deck:
+                self.state.wizard_market.append(self.state.wizard_deck.pop(0))
         market_exhausted = not any(self.state.market.cards[level] for level in (1, 2, 3))
-        if any(player.score >= 18 for player in self.state.players) or market_exhausted:
+        if any(player.score >= VICTORY_SCORE for player in self.state.players):
+            self.state.end_triggered = True
+            self.state.finished = True
+            return messages
+        if market_exhausted:
             self.state.end_triggered = True
         self.state.next_player()
         if self.state.end_triggered and self.state.current_player == 0:
             self.state.finished = True
+        if not self.state.finished:
+            refill_market(self.state)
+        return messages
 
     def winners(self) -> list[Player]:
         highest = max(player.score for player in self.state.players)

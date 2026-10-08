@@ -15,10 +15,11 @@ if str(ROOT) not in sys.path:
 
 from src.ai import choose_action
 from src.cards import build_decks
-from src.game import Action, Game
+from src.game import Action, Game, VICTORY_SCORE
 from src.models import ATTRIBUTES, Attribute, Player, SpecializationEffect
 from src.rules import create_state
 from src.specializations import STAGE_NAMES, specialization_name
+from src.wizards import MAGICIAN_CARDS
 
 
 ATTR_NAMES = [attribute.value for attribute in ATTRIBUTES]
@@ -133,7 +134,12 @@ def simulate_game(seed: int) -> dict:
             label = effect_label(pending_effect.attribute, pending_effect.stage)
             player_flow[actor_index]["used"].append(label)
             result = messages[0] if messages else ""
-            if not any(fragment in result for fragment in ("效果失效", "没有可偷取", "没有可萌化的宠物")):
+            if not any(fragment in result for fragment in (
+                "效果失效",
+                "没有可偷取",
+                "其他玩家没有二级或三级宠物",
+                "没有可烧掉的对手预购卡或已购卡",
+            )):
                 player_flow[actor_index]["successful"].append(label)
             if pending_effect.attribute == Attribute.DARK and pending_effect.stage == 1:
                 for index, player in enumerate(game.state.players):
@@ -189,6 +195,7 @@ def simulate_game(seed: int) -> dict:
             "winner": is_winner,
             "win_share": winner_share if is_winner else 0,
             "score": player.score,
+            "wizard_cards": [card.name for card in player.wizard_cards],
             "pet_count": len(player.purchased),
             "single_count": sum(singles.values()),
             "dual_count": sum(1 for card, _ in player.purchased if card.is_dual),
@@ -226,13 +233,18 @@ def simulate_game(seed: int) -> dict:
             "global_remaining": player_remaining + pool_final,
         }
 
+    victory_score_reached = any(player.score >= VICTORY_SCORE for player in game.state.players)
     return {
         "seed": seed,
-        "ending_round": max(1, game.state.round_number - 1),
+        "ending_round": (
+            game.state.round_number
+            if victory_score_reached
+            else max(1, game.state.round_number - 1)
+        ),
         "end_reason": (
             "stalemate_after_full_round_of_passes"
             if not game.state.finished
-            else "score_threshold" if any(player.score >= 18 for player in game.state.players)
+            else "score_threshold" if victory_score_reached
             else "market_exhausted"
         ),
         "actions": action_count,
@@ -268,6 +280,7 @@ class Aggregate:
         }
         self.routes = defaultdict(Counter)
         self.winning_routes = Counter()
+        self.wizard_awards = Counter({card.name: 0 for card in MAGICIAN_CARDS})
         self.effects = {label: Counter() for label in EFFECT_LABELS}
         self.games_with_depletion = Counter()
         self.end_reasons = Counter()
@@ -291,6 +304,7 @@ class Aggregate:
 
         for player in record["players"]:
             self.scores += player["score"]
+            self.wizard_awards.update(player.get("wizard_cards", []))
             route_weights = player["primary_route_weights"]
             route_stats = self.routes[player["primary_route"]]
             route_stats["player_games"] += 1
@@ -449,10 +463,14 @@ class Aggregate:
             "weakest_observed_attribute_route": weakest,
             "most_common_winning_route": common_winning_route,
             "specialization_impact": effect_impact,
+            "wizard_cards": {
+                "total_awards": sum(self.wizard_awards.values()),
+                "awards_by_name": dict(self.wizard_awards),
+            },
             "methodology": {
                 "players": "每局4名玩家，均使用当前 src.ai.choose_action；策略相同，随机种子改变牌序。",
                 "seed_range": "包含首尾，逐个整数作为牌库与局内随机种子。",
-                "end_round": "记录最后一个完整结束的回合；达到18分后仍完成当前轮。",
+                "end_round": "达到18分立即结算；仅在公共市场全部耗尽时完成当前轮再结算。",
                 "stalemate": "若四名 AI 连续空过一整轮，则判为无法继续的僵局并按当时最高分结算；这用于终止模拟死循环，不会修改正式游戏规则。",
                 "primary_route": "主路线按单属性宠物数量最多的属性确定；并列保留为复合路线，属性占比按并列数平均分配。",
                 "dual_purchases": "双属性购买按卡面属性分别记一次，因此属性列统计不互斥；玩家总购买比例按卡牌实际张数计算。",
@@ -472,7 +490,7 @@ def write_exports(output: Path, games_path: Path, summary: dict) -> None:
             "specialization_triggers", "specialization_uses", "light_public_gained", "light_temporary_gained",
             "light_public_used", "light_temporary_used", "winning_routes",
         ))
-        player_fields = ["seed", "player_index", "player", "winner", "win_share", "score", "pet_count", "single_count", "dual_count", "single_ratio", "dual_ratio", "primary_route", "primary_route_attributes", "capacity", "capacity_hits", "light_remaining", "temporary_light_remaining", "triggered_specializations", "used_specializations", "successful_specializations"]
+        player_fields = ["seed", "player_index", "player", "winner", "win_share", "score", "wizard_cards", "pet_count", "single_count", "dual_count", "single_ratio", "dual_ratio", "primary_route", "primary_route_attributes", "capacity", "capacity_hits", "light_remaining", "temporary_light_remaining", "triggered_specializations", "used_specializations", "successful_specializations"]
         for name in ATTR_NAMES:
             player_fields.extend((f"single_{name}", f"dual_appearance_{name}", f"discount_{name}", f"resource_remaining_{name}", f"resource_acquired_{name}", f"resource_consumed_{name}"))
         players_writer = csv.DictWriter(players_file, fieldnames=player_fields)
@@ -507,6 +525,7 @@ def write_exports(output: Path, games_path: Path, summary: dict) -> None:
                     "triggered_specializations": ";".join(player["triggered_specializations"]),
                     "used_specializations": ";".join(player["used_specializations"]),
                     "successful_specializations": ";".join(player["successful_specializations"]),
+                    "wizard_cards": ";".join(player.get("wizard_cards", [])),
                 })
                 for name in ATTR_NAMES:
                     row[f"single_{name}"] = player["single_by_attribute"][name]
@@ -547,31 +566,25 @@ def render_report(summary: dict) -> str:
     lines.extend(["", f"按主路线样本胜率，当前最强路线为 **{best}**，最弱为 **{weak}**；最常见胜利路线为 **{common}**。", "", "## 专精与胜率", "", "| 专精 | 触发玩家局 | 成功使用 | 使用者胜率 | 未使用者胜率 | 胜率差 | 平均分差 |", "|---|---:|---:|---:|---:|---:|---:|"])
     for label, data in summary["specialization_impact"].items():
         lines.append(f"| {label} | {data['triggered_player_games']:,} | {data['successful_uses']:,} | {data['win_rate_when_used_percent']:.1f}% | {data['win_rate_without_use_percent']:.1f}% | {data['win_rate_difference_percentage_points']:+.1f}pp | {data['score_difference_when_used']:+.2f} |")
+    wizard_summary = summary.get("wizard_cards", {})
+    lines.extend(["", "## 魔法师卡获取", "", f"总获取 {wizard_summary.get('total_awards', 0):,} 张：", "", "| 魔法师 | 条件 | 获取次数 |", "|---|---|---:|"])
+    for wizard in MAGICIAN_CARDS:
+        count = wizard_summary.get("awards_by_name", {}).get(wizard.name, 0)
+        lines.append(f"| {wizard.name} | {wizard.requirement_text} | {count:,} |")
     lines.extend(["", "* 双属性宠物按卡面两个属性各计一次，所以双属性列不能相加当作总购买数。主路线按单属性宠物数量最多的属性判定，并列路线按权重平分。专精胜率对比是观察性结果，不代表因果。", "", "逐局与逐玩家明细见 `games.csv`、`players.csv` 和 `resources.csv`；完整指标见 `summary.json`。", ""])
     return "\n".join(lines)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run reproducible all-AI balance simulations.")
-    parser.add_argument("--games", type=int, default=10000, help="number of games (default: 10000)")
-    parser.add_argument("--seed-start", type=int, default=1, help="first deterministic seed")
-    parser.add_argument("--output", type=Path, help="output directory")
-    parser.add_argument("--progress-every", type=int, default=250, help="progress and checkpoint interval")
-    args = parser.parse_args()
-    if args.games < 1 or args.progress_every < 1:
-        parser.error("--games and --progress-every must be positive")
-
-    seed_end = args.seed_start + args.games - 1
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output = args.output or ROOT / "analysis" / f"balance_{args.games}_seeds_{args.seed_start}_{seed_end}_{timestamp}"
-    if output.exists() and any(output.iterdir()):
-        parser.error(f"output directory is not empty: {output}")
+def run_simulation(games: int, seed_start: int, output: Path, progress_every: int, label: str = "") -> dict:
+    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+        raise FileExistsError(f"output directory is not empty or is not a directory: {output}")
     output.mkdir(parents=True, exist_ok=True)
+    seed_end = seed_start + games - 1
     games_path = output / "games.jsonl"
     aggregate = Aggregate()
     config = {
-        "games_requested": args.games,
-        "seed_start": args.seed_start,
+        "games_requested": games,
+        "seed_start": seed_start,
         "seed_end": seed_end,
         "players_per_game": 4,
         "end_score_threshold": 18,
@@ -580,15 +593,16 @@ def main() -> None:
 
     started = datetime.now()
     with games_path.open("w", encoding="utf-8") as stream:
-        for index in range(args.games):
-            record = simulate_game(args.seed_start + index)
+        for index in range(games):
+            record = simulate_game(seed_start + index)
             stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
             aggregate.add(record)
-            if (index + 1) % args.progress_every == 0 or index + 1 == args.games:
+            if (index + 1) % progress_every == 0 or index + 1 == games:
                 stream.flush()
                 elapsed = (datetime.now() - started).total_seconds()
                 rate = (index + 1) / max(elapsed, 1e-9)
-                print(f"completed {index + 1:,}/{args.games:,} games; {rate:.1f} games/s; elapsed {elapsed:.0f}s", flush=True)
+                prefix = f"{label} " if label else ""
+                print(f"{prefix}completed {index + 1:,}/{games:,} games; {rate:.1f} games/s; elapsed {elapsed:.0f}s", flush=True)
 
     summary = aggregate.as_dict(config)
     summary["run"] = {
@@ -599,6 +613,125 @@ def main() -> None:
     write_exports(output, games_path, summary)
     print(f"report: {output / 'report.md'}", flush=True)
     print(f"summary: {output / 'summary.json'}", flush=True)
+    return summary
+
+
+def _batch_metrics(summary: dict) -> dict:
+    overall = summary["overall"]
+    return {
+        "completed_games": overall["completed_games"],
+        "average_ending_round": overall["average_ending_round"],
+        "average_final_score_per_player": overall["average_final_score_per_player"],
+        "average_actions_per_game": overall["average_actions_per_game"],
+        "stalemate_games": overall["stalemate_games"],
+        "end_reasons": overall["end_reasons"],
+        "strongest_observed_attribute_route": summary["strongest_observed_attribute_route"],
+        "weakest_observed_attribute_route": summary["weakest_observed_attribute_route"],
+        "most_common_winning_route": summary["most_common_winning_route"],
+    }
+
+
+def write_batch_index(output: Path, batch: dict) -> None:
+    (output / "batch_summary.json").write_text(
+        json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    complete = sum(run["status"] == "complete" for run in batch["runs"])
+    lines = [
+        "# 平衡测试批次", "",
+        f"- 测试批次：{batch['requested_runs']} 次，每次 {batch['games_per_run']:,} 局。",
+        f"- 总种子范围：{batch['seed_start']}–{batch['seed_end']}；每次使用不重叠的连续种子段。",
+        f"- 已完成：{complete}/{batch['requested_runs']} 次。", "",
+        "| 次数 | 种子范围 | 状态 | 平均回合 | 平均分 | 僵局 | 详细报告 |",
+        "|---:|---:|---|---:|---:|---:|---|",
+    ]
+    for run in batch["runs"]:
+        metrics = run.get("metrics", {})
+        rounds = f"{metrics['average_ending_round']:.2f}" if "average_ending_round" in metrics else "—"
+        score = f"{metrics['average_final_score_per_player']:.2f}" if "average_final_score_per_player" in metrics else "—"
+        stalls = str(metrics["stalemate_games"]) if "stalemate_games" in metrics else "—"
+        report_link = f"[{run['directory']}/report.md]({run['directory']}/report.md)" if run["status"] == "complete" else "—"
+        lines.append(
+            f"| {run['index']} | {run['seed_start']}–{run['seed_end']} | {run['status']} | {rounds} | {score} | {stalls} | {report_link} |"
+        )
+        if run.get("error"):
+            lines.append(f"\n运行 {run['index']} 失败：`{run['error']}`\n")
+    lines.append("")
+    (output / "batch_report.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def run_series(runs: int, games_per_run: int, seed_start: int, output: Path, progress_every: int) -> None:
+    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+        raise FileExistsError(f"batch output directory is not empty or is not a directory: {output}")
+    output.mkdir(parents=True, exist_ok=True)
+    seed_end = seed_start + runs * games_per_run - 1
+    batch = {
+        "created_local": datetime.now().isoformat(timespec="seconds"),
+        "requested_runs": runs,
+        "games_per_run": games_per_run,
+        "seed_start": seed_start,
+        "seed_end": seed_end,
+        "runs": [],
+    }
+    for index in range(runs):
+        run_seed_start = seed_start + index * games_per_run
+        run_seed_end = run_seed_start + games_per_run - 1
+        directory = f"run_{index + 1:03d}_seeds_{run_seed_start}_{run_seed_end}"
+        entry = {
+            "index": index + 1,
+            "directory": directory,
+            "seed_start": run_seed_start,
+            "seed_end": run_seed_end,
+            "status": "pending",
+        }
+        batch["runs"].append(entry)
+        entry["status"] = "running"
+        write_batch_index(output, batch)
+        try:
+            summary = run_simulation(
+                games_per_run,
+                run_seed_start,
+                output / directory,
+                progress_every,
+                label=f"run {index + 1}/{runs}",
+            )
+        except Exception as error:
+            entry["status"] = "failed"
+            entry["error"] = f"{type(error).__name__}: {error}"
+            write_batch_index(output, batch)
+            raise
+        entry["status"] = "complete"
+        entry["metrics"] = _batch_metrics(summary)
+        write_batch_index(output, batch)
+    print(f"batch report: {output / 'batch_report.md'}", flush=True)
+    print(f"batch summary: {output / 'batch_summary.json'}", flush=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run reproducible all-AI balance simulations.")
+    parser.add_argument("--games", type=int, default=10000, help="games per run (default: 10000)")
+    parser.add_argument("--runs", type=int, default=1, help="number of independent runs; each run gets its own folder and seed range")
+    parser.add_argument("--seed-start", type=int, default=1, help="first deterministic seed")
+    parser.add_argument("--output", type=Path, help="output directory; with --runs > 1, this is the batch parent directory")
+    parser.add_argument("--progress-every", type=int, default=250, help="progress and checkpoint interval")
+    args = parser.parse_args()
+    if args.games < 1 or args.runs < 1 or args.progress_every < 1:
+        parser.error("--games, --runs, and --progress-every must be positive")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if args.runs == 1:
+        seed_end = args.seed_start + args.games - 1
+        output = args.output or ROOT / "analysis" / f"balance_{args.games}_seeds_{args.seed_start}_{seed_end}_{timestamp}"
+        try:
+            run_simulation(args.games, args.seed_start, output, args.progress_every)
+        except FileExistsError as error:
+            parser.error(str(error))
+    else:
+        seed_end = args.seed_start + args.games * args.runs - 1
+        output = args.output or ROOT / "analysis" / f"balance_batch_{args.runs}x{args.games}_seeds_{args.seed_start}_{seed_end}_{timestamp}"
+        try:
+            run_series(args.runs, args.games, args.seed_start, output, args.progress_every)
+        except FileExistsError as error:
+            parser.error(str(error))
 
 
 if __name__ == "__main__":

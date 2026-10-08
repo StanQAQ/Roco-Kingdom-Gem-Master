@@ -9,7 +9,10 @@ __pycache__/
 venv/
 env/
 ENV/
-.python-version
+__pypackages__/
+.tox/
+.nox/
+pip-wheel-metadata/
 
 # 测试、覆盖率和类型检查缓存
 .pytest_cache/
@@ -30,8 +33,8 @@ dist/
 logs/
 *.log
 
-# 自动对局平衡测试结果（逐局数据、汇总和报告）
-/analysis/balance_*/
+# 自动对局测试输出（逐局数据、汇总和报告）。保留 analysis/ 下的说明文档。
+analysis/
 
 # Qt / IDE / 编辑器本地文件
 .vscode/

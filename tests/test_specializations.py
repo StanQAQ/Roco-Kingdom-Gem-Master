@@ -3,8 +3,8 @@ import pytest
 from src.cards import all_cards, build_decks
 from src.game import Action, Game
 from src.models import Attribute, PetCard, Player, SpecializationEffect
-from src.rules import RuleError, buy_card, create_state
-from src.specializations import detect_specializations, resolve_specialization
+from src.rules import RuleError, buy_card, create_state, refill_market, reserve_card
+from src.specializations import STAGE_NAMES, detect_specializations, resolve_specialization
 
 
 def make_state(seed: int = 7):
@@ -65,6 +65,7 @@ def test_water_effect_reduces_highest_cost_and_then_grants_one_free_purchase():
 
     resolve_specialization(state, SpecializationEffect(0, Attribute.WATER, 1), card=target)
     assert target.cost == {Attribute.FIRE: 2, Attribute.GRASS: 1}
+    assert Attribute.WATER in target.specialization_glows
 
     resolve_specialization(state, SpecializationEffect(0, Attribute.WATER, 2))
     expensive = PetCard("FREE", 1, (Attribute.GRASS,), {Attribute.DARK: 99}, 2)
@@ -74,19 +75,76 @@ def test_water_effect_reduces_highest_cost_and_then_grants_one_free_purchase():
     assert not player.next_purchase_free
 
 
-def test_fire_effect_increases_capacity_and_replaces_the_market():
+def test_specialization_names_are_updated():
+    assert STAGE_NAMES[(Attribute.WATER, 1)] == "泡沫幻影"
+    assert STAGE_NAMES[(Attribute.GRASS, 1)] == "根吸收"
+    assert STAGE_NAMES[(Attribute.GRASS, 2)] == "汲取"
+    assert STAGE_NAMES[(Attribute.FIRE, 1)] == "引燃"
+    assert STAGE_NAMES[(Attribute.FIRE, 2)] == "阳火增辉"
+    assert STAGE_NAMES[(Attribute.CUTE, 1)] == "撒娇"
+    assert STAGE_NAMES[(Attribute.CUTE, 2)] == "甜心续航"
+
+
+def test_fire_stage_one_burns_opponents_reserved_card_to_its_deck_and_keeps_light():
     state = make_state()
-    old_ids = {card.card_id for cards in state.market.cards.values() for card in cards}
+    owner = state.players[1]
+    card = state.market.cards[2][0]
+    deck_size_before = len(state.decks[2])
+    reserve_card(state, owner, card)
+    refill_market(state)  # The next player's turn begins before the attack resolves.
+    light_after_reserving = owner.light
+
+    message = resolve_specialization(state, SpecializationEffect(0, Attribute.FIRE, 1))
+
+    assert card not in owner.reserved
+    assert card not in state.market.cards[2]
+    assert card in state.decks[2]
+    assert len(state.decks[2]) == deck_size_before
+    assert owner.light == light_after_reserving
+    assert "牌库" in message
+    assert "贤者碎晶" in message
+
+
+def test_fire_stage_one_without_target_reservation_burns_target_lowest_card_not_caster_card():
+    state = make_state()
+    caster = state.players[0]
+    target = state.players[1]
+    low = single_card(Attribute.FIRE, level=1, score=2, card_id="LOW")
+    high = single_card(Attribute.FIRE, level=3, score=5, card_id="HIGH")
+    caster_card = single_card(Attribute.WATER, level=1, score=4, card_id="CASTER")
+    target.purchased.extend([(low, None), (high, None)])
+    target.score = 7
+    caster.purchased.append((caster_card, None))
+    caster.score = 4
 
     resolve_specialization(state, SpecializationEffect(0, Attribute.FIRE, 1))
-    message = resolve_specialization(state, SpecializationEffect(0, Attribute.FIRE, 2))
 
-    new_ids = {card.card_id for cards in state.market.cards.values() for card in cards}
-    assert state.players[0].resource_capacity == 11
-    assert len(state.discarded[1]) + len(state.discarded[2]) + len(state.discarded[3]) == 15
-    assert len(new_ids) == 15
-    assert not old_ids & new_ids
-    assert "15 张" in message
+    assert all(card is not low for card, _ in target.purchased)
+    assert any(card is high for card, _ in target.purchased)
+    assert target.score == 5
+    assert caster.purchased == [(caster_card, None)]
+    assert caster.score == 4
+    assert low in state.discarded[1]
+    assert low not in state.market.cards[1]
+
+
+def test_fire_stage_two_doubles_the_score_of_exactly_the_next_purchase():
+    state = make_state()
+    player = state.players[0]
+    first = single_card(Attribute.FIRE, score=3, card_id="DOUBLE")
+    second = single_card(Attribute.FIRE, score=2, card_id="NORMAL")
+    state.market.cards[1][:2] = [first, second]
+
+    resolve_specialization(state, SpecializationEffect(0, Attribute.FIRE, 2))
+    buy_card(state, player, first)
+
+    assert player.score == 6
+    assert first.effective_score == 6
+    assert first.score == 3
+    assert not player.next_purchase_score_doubled
+    buy_card(state, player, second)
+    assert player.score == 8
+    assert second.effective_score == 2
 
 
 def test_grass_effect_adds_score_and_temporary_light_is_not_returned():
@@ -95,6 +153,7 @@ def test_grass_effect_adds_score_and_temporary_light_is_not_returned():
     original_score = target.score
     resolve_specialization(state, SpecializationEffect(0, Attribute.GRASS, 1), card=target)
     assert target.score == original_score + 1
+    assert Attribute.GRASS in target.specialization_glows
 
     state.players[1].purchased.extend(
         [(single_card(Attribute.GRASS, card_id="G1"), None), (single_card(Attribute.GRASS, card_id="G2"), None)]
@@ -110,28 +169,43 @@ def test_grass_effect_adds_score_and_temporary_light_is_not_returned():
     assert state.light_pool == light_pool_before
 
 
-def test_cute_effect_moves_market_card_down_and_weakens_purchased_cards():
+def test_cute_stage_one_grants_immunity_to_one_other_player_attack():
     state = make_state()
-    target = next(card for card in state.market.cards[3] if not card.is_dual)
-    old_score = target.score
-    resolve_specialization(state, SpecializationEffect(0, Attribute.CUTE, 1), card=target)
-    assert target.level == 2
-    assert target.score < old_score
-    assert target in state.market.cards[2]
-    assert len(state.market.cards[3]) == 5
-    assert len(state.market.cards[2]) == 6
+    protected = state.players[1]
+    protected.resources[Attribute.FIRE] = 1
+    resolve_specialization(state, SpecializationEffect(1, Attribute.CUTE, 1))
+    assert protected.next_attack_immune
 
-    state.players[0].next_purchase_free = True
-    buy_card(state, state.players[0], target)
-    assert len(state.market.cards[2]) == 5
+    message = resolve_specialization(
+        state,
+        SpecializationEffect(0, Attribute.DARK, 1),
+        target_player=1,
+    )
 
-    high_card = next(card for card in all_cards() if card.level == 3 and not card.is_dual)
-    state.players[1].purchased.append((high_card, None))
-    state.players[1].score = high_card.score
-    before = state.players[1].score
+    assert protected.resources[Attribute.FIRE] == 1
+    assert state.players[0].resources[Attribute.FIRE] == 0
+    assert not protected.next_attack_immune
+    assert "免疫" in message
+
+
+def test_cute_stage_two_downgrades_one_random_card_for_each_other_player():
+    state = make_state()
+    own = PetCard("OWN-HIGH", 3, (Attribute.WATER,), {}, 5)
+    state.players[0].purchased.append((own, None))
+    state.players[0].score = own.effective_score
+    targets = []
+    for index, player in enumerate(state.players[1:], start=1):
+        card = PetCard(f"TARGET-{index}", 3, own.attributes, {}, 5)
+        player.purchased.append((card, None))
+        player.score = card.effective_score
+        targets.append((player, card, card.effective_score))
+
     resolve_specialization(state, SpecializationEffect(0, Attribute.CUTE, 2))
-    assert state.players[1].score < before
-    assert high_card.level == 2
+
+    assert own.level == 3
+    for player, card, old_score in targets:
+        assert card.level == 2
+        assert player.score == card.effective_score < old_score
 
 
 def test_dark_effect_steals_a_resource_and_a_card_from_a_leading_player():

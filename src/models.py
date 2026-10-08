@@ -25,6 +25,12 @@ class PetCard:
     cost: dict[Attribute, int]
     score: int
     transformed_from: str | None = None
+    score_multiplier: int = 1
+    specialization_glows: set[Attribute] = field(default_factory=set)
+
+    @property
+    def effective_score(self) -> int:
+        return self.score * self.score_multiplier
 
     @property
     def is_dual(self) -> bool:
@@ -32,6 +38,17 @@ class PetCard:
 
     def cost_text(self) -> str:
         return " ".join(f"{attribute.value}{amount}" for attribute, amount in self.cost.items())
+
+
+@dataclass(frozen=True)
+class WizardCard:
+    name: str
+    requirements: tuple[tuple[Attribute, int], ...]
+    score: int = 3
+
+    @property
+    def requirement_text(self) -> str:
+        return "＋".join(f"{attribute.value}{amount}" for attribute, amount in self.requirements)
 
 
 @dataclass
@@ -45,6 +62,9 @@ class Player:
     score: int = 0
     resource_capacity: int = 10
     next_purchase_free: bool = False
+    next_purchase_score_doubled: bool = False
+    next_attack_immune: bool = False
+    wizard_cards: list[WizardCard] = field(default_factory=list)
     specialization_triggered: set[tuple[Attribute, int]] = field(default_factory=set)
 
     @property
@@ -89,6 +109,8 @@ class GameState:
     action_count: int = 0
     discarded: dict[int, list[PetCard]] = field(default_factory=lambda: {1: [], 2: [], 3: []})
     pending_specializations: list[SpecializationEffect] = field(default_factory=list)
+    wizard_market: list[WizardCard] = field(default_factory=list)
+    wizard_deck: list[WizardCard] = field(default_factory=list)
     rng: random.Random = field(default_factory=random.Random, repr=False)
 
     def current(self) -> Player:

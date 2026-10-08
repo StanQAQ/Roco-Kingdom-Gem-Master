@@ -6,14 +6,14 @@ from .rules import RuleError
 
 
 STAGE_NAMES = {
-    (Attribute.WATER, 1): "润泽",
+    (Attribute.WATER, 1): "泡沫幻影",
     (Attribute.WATER, 2): "免费捕捉",
-    (Attribute.FIRE, 1): "炽热背包",
-    (Attribute.FIRE, 2): "火云车",
-    (Attribute.GRASS, 1): "生机",
-    (Attribute.GRASS, 2): "万物生",
-    (Attribute.CUTE, 1): "萌化",
-    (Attribute.CUTE, 2): "示弱",
+    (Attribute.FIRE, 1): "引燃",
+    (Attribute.FIRE, 2): "阳火增辉",
+    (Attribute.GRASS, 1): "根吸收",
+    (Attribute.GRASS, 2): "汲取",
+    (Attribute.CUTE, 1): "撒娇",
+    (Attribute.CUTE, 2): "甜心续航",
     (Attribute.DARK, 1): "吞噬",
     (Attribute.DARK, 2): "恶魔契约",
 }
@@ -45,8 +45,6 @@ def detect_specializations(state: GameState, player_index: int) -> list[Speciali
 
 def legal_card_targets(state: GameState, effect: SpecializationEffect) -> list[PetCard]:
     cards = [card for level in (1, 2, 3) for card in state.market.cards[level]]
-    if effect.attribute == Attribute.CUTE and effect.stage == 1:
-        return [card for card in cards if card.level > 1]
     if (effect.attribute, effect.stage) in {
         (Attribute.WATER, 1),
         (Attribute.GRASS, 1),
@@ -95,7 +93,7 @@ def downgrade_card(card: PetCard) -> tuple[int, int, str]:
     if card.level <= 1:
         raise RuleError("一级宠物不能继续萌化")
     old_level = card.level
-    old_score = card.score
+    old_score = card.effective_score
     template = _template_for_downgrade(card)
     card.level = template.level
     card.cost = dict(template.cost)
@@ -104,9 +102,50 @@ def downgrade_card(card: PetCard) -> tuple[int, int, str]:
     return old_level, old_score, template.card_id
 
 
-def _refill_level(state: GameState, level: int, target_size: int) -> None:
-    while len(state.market.cards[level]) < target_size and state.decks[level]:
-        state.market.cards[level].append(state.decks[level].pop())
+def _return_to_deck(state: GameState, card: PetCard) -> None:
+    """Shuffle a burned reservation back into its level deck."""
+    card.score_multiplier = 1
+    deck = state.decks[card.level]
+    deck.insert(state.rng.randrange(len(deck) + 1), card)
+
+
+def _burn_for_fire_stage_one(state: GameState, player_index: int) -> str:
+    targets = [
+        target
+        for index, target in enumerate(state.players)
+        if index != player_index and (target.reserved or target.purchased)
+    ]
+    if not targets:
+        return "没有可烧掉的对手预购卡或已购卡，效果未生效"
+
+    target = state.rng.choice(targets)
+    if target.reserved:
+        card = state.rng.choice(target.reserved)
+        target.reserved.remove(card)
+        _return_to_deck(state, card)
+        return (
+            f"烧掉了{target.name}预购的{card.card_id}，归还至{card.level}级牌库；"
+            f"{target.name}保留预购获得的贤者碎晶"
+        )
+
+    lowest_level = min(card.level for card, _ in target.purchased)
+    candidates = [card for card, _ in target.purchased if card.level == lowest_level]
+    card = state.rng.choice(candidates)
+    old_score = card.effective_score
+    target.purchased = [(owned, chosen) for owned, chosen in target.purchased if owned is not card]
+    target.score -= old_score
+    state.discarded[card.level].append(card)
+    return (
+        f"烧掉了{target.name}最低等级的{card.card_id}，该卡移出对局，"
+        f"{target.name}失去{old_score}分"
+    )
+
+
+def _apply_attack_immunity(attacker: Player, target: Player, name: str) -> str | None:
+    if attacker is target or not target.next_attack_immune:
+        return None
+    target.next_attack_immune = False
+    return f"{name}：{target.name}触发撒娇，免疫了来自{attacker.name}的攻击"
 
 
 def resolve_specialization(
@@ -126,7 +165,7 @@ def resolve_specialization(
         if not legal_cards:
             return f"{name}：市场中没有可选宠物，效果失效"
         if card not in legal_cards:
-            raise RuleError("润泽需要选择公共市场中的宠物")
+            raise RuleError("泡沫幻影需要选择公共市场中的宠物")
         assert card is not None
         highest = max(card.cost.values())
         choices = [item for item, amount in card.cost.items() if amount == highest]
@@ -135,6 +174,7 @@ def resolve_specialization(
         card.cost[reduced] -= 1
         if card.cost[reduced] == 0:
             del card.cost[reduced]
+        card.specialization_glows.add(Attribute.WATER)
         return f"{name}：{card.card_id} 的{reduced.value}系成本 -1"
 
     if (attribute, stage) == (Attribute.WATER, 2):
@@ -142,27 +182,21 @@ def resolve_specialization(
         return f"{name}：{player.name} 下一次购买免费"
 
     if (attribute, stage) == (Attribute.FIRE, 1):
-        player.resource_capacity += 1
-        return f"{name}：{player.name} 的资源上限提高到 {player.resource_capacity}"
+        return f"{name}：{_burn_for_fire_stage_one(state, effect.player_index)}"
 
     if (attribute, stage) == (Attribute.FIRE, 2):
-        burned = 0
-        for level in (1, 2, 3):
-            old_cards = list(state.market.cards[level])
-            state.market.cards[level].clear()
-            state.discarded[level].extend(old_cards)
-            burned += len(old_cards)
-            _refill_level(state, level, len(old_cards))
-        return f"{name}：烧掉市场 {burned} 张宠物并重新补牌"
+        player.next_purchase_score_doubled = True
+        return f"{name}：{player.name}下一张购买的宠物分数翻倍"
 
     if (attribute, stage) == (Attribute.GRASS, 1):
         legal_cards = legal_card_targets(state, effect)
         if not legal_cards:
             return f"{name}：市场中没有可选宠物，效果失效"
         if card not in legal_cards:
-            raise RuleError("生机需要选择公共市场中的宠物")
+            raise RuleError("根吸收需要选择公共市场中的宠物")
         assert card is not None
         card.score += 1
+        card.specialization_glows.add(Attribute.GRASS)
         return f"{name}：{card.card_id} 的分数 +1"
 
     if (attribute, stage) == (Attribute.GRASS, 2):
@@ -173,34 +207,28 @@ def resolve_specialization(
         )
         gained = grass_cards + 1
         player.temporary_light += gained
-        return f"{name}：{player.name} 获得 {gained} 枚临时光系灵碎"
+        return f"{name}：{player.name} 获得 {gained} 枚临时贤者碎晶"
 
     if (attribute, stage) == (Attribute.CUTE, 1):
-        legal_cards = legal_card_targets(state, effect)
-        if not legal_cards:
-            return f"{name}：市场中没有可萌化的宠物，效果失效"
-        if card not in legal_cards:
-            raise RuleError("萌化需要选择公共市场中的二级或三级宠物")
-        assert card is not None
-        old_level = card.level
-        old_market_size = len(state.market.cards[old_level])
-        state.market.cards[old_level].remove(card)
-        _, _, template_id = downgrade_card(card)
-        state.market.cards[card.level].append(card)
-        _refill_level(state, old_level, old_market_size)
-        return f"{name}：{card.card_id} 萌化为 {template_id} 数值模板并移入 {card.level} 级市场"
+        player.next_attack_immune = True
+        return f"{name}：{player.name}获得一次攻击免疫，直到免疫一次其他玩家的攻击"
 
     if (attribute, stage) == (Attribute.CUTE, 2):
         changed: list[str] = []
-        for owner in state.players:
-            eligible = [owned for owned, _ in owner.purchased if owned.level > 1]
+        for index, owner in enumerate(state.players):
+            if index == effect.player_index:
+                continue
+            eligible = [owned for owned, _ in owner.purchased if owned.level in (2, 3)]
             if not eligible:
                 continue
             chosen = state.rng.choice(eligible)
-            _, old_score, template_id = downgrade_card(chosen)
-            owner.score += chosen.score - old_score
-            changed.append(f"{owner.name}:{chosen.card_id}→{template_id}")
-        detail = "、".join(changed) if changed else "没有可萌化的宠物"
+            old_level, old_score, template_id = downgrade_card(chosen)
+            owner.score += chosen.effective_score - old_score
+            changed.append(
+                f"{owner.name}:{chosen.card_id} {old_level}级→{chosen.level}级，"
+                f"{old_score}分→{chosen.effective_score}分"
+            )
+        detail = "；".join(changed) if changed else "其他玩家没有二级或三级宠物"
         return f"{name}：{detail}"
 
     if (attribute, stage) == (Attribute.DARK, 1):
@@ -211,6 +239,9 @@ def resolve_specialization(
             raise RuleError("吞噬需要选择一名持有属性灵碎的其他玩家")
         assert target_player is not None
         victim = state.players[target_player]
+        blocked = _apply_attack_immunity(player, victim, name)
+        if blocked:
+            return blocked
         choices = [item for item, amount in victim.resources.items() if amount > 0]
         stolen = state.rng.choice(choices)
         victim.resources[stolen] -= 1
@@ -227,12 +258,15 @@ def resolve_specialization(
             raise RuleError("恶魔契约必须从已购宠物数最多的其他玩家中选择")
         assert target_player is not None
         victim = state.players[target_player]
+        blocked = _apply_attack_immunity(player, victim, name)
+        if blocked:
+            return blocked
         stolen_entry = state.rng.choice(victim.purchased)
         victim.purchased.remove(stolen_entry)
         player.purchased.append(stolen_entry)
         stolen_card = stolen_entry[0]
-        victim.score -= stolen_card.score
-        player.score += stolen_card.score
+        victim.score -= stolen_card.effective_score
+        player.score += stolen_card.effective_score
         return f"{name}：{player.name} 从 {victim.name} 偷走 {stolen_card.card_id}"
 
     raise RuleError("未知的属性专精效果")

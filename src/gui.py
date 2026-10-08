@@ -16,18 +16,13 @@ from .models import ATTRIBUTES, Attribute, PetCard, Player
 from .rules import RuleError, create_state, payment_for
 from .seeding import seed_description, select_seed
 from .specializations import legal_card_targets, legal_player_targets, single_attribute_count, specialization_name
+from .theme import RESOURCE_COLORS as ATTRIBUTE_COLORS
 
 
 class MagicGemsApp(tk.Tk):
     CARD_WIDTH = 84
     CARD_HEIGHT = 64
-    RESOURCE_COLORS = {
-        Attribute.WATER: ("#a6d4f5", "#2379b9"),
-        Attribute.FIRE: ("#f4aba3", "#bf4640"),
-        Attribute.GRASS: ("#b7dd9a", "#588e38"),
-        Attribute.CUTE: ("#f0b7d4", "#bf5894"),
-        Attribute.DARK: ("#c8ccd2", "#747b86"),
-    }
+    RESOURCE_COLORS = ATTRIBUTE_COLORS
 
     def __init__(self, seed: int = 1, ai_battle: bool = False, interval: float = 0.5, seed_mode: str = "fixed") -> None:
         super().__init__()
@@ -236,7 +231,7 @@ class MagicGemsApp(tk.Tk):
         state = self.game.state
         current = state.current()
         pending_text = f"  ·  待结算 {specialization_name(state.pending_specializations[0])}" if state.pending_specializations else ""
-        self.status_var.set(f"第 {state.round_number} 轮  ·  {current.name} 行动  ·  光系 {state.light_pool}{pending_text}")
+        self.status_var.set(f"第 {state.round_number} 轮  ·  {current.name} 行动  ·  贤者碎晶 {state.light_pool}{pending_text}")
         self.render_market()
         self.render_players()
         self.render_actions()
@@ -361,6 +356,19 @@ class MagicGemsApp(tk.Tk):
         self.card_buttons.clear()
         for level in (1, 2, 3):
             cards = state.market.cards[level]
+            while len(self.market_card_widgets[level]) < len(cards):
+                parent = self.market_card_widgets[level][0].master
+                widget = tk.Button(
+                    parent,
+                    image=self.card_images["normal"],
+                    compound="center",
+                    font=("Songti SC", 8),
+                    justify="center",
+                    wraplength=self.CARD_WIDTH - 8,
+                    padx=1,
+                    pady=1,
+                )
+                self.market_card_widgets[level].append(widget)
             for index, widget in enumerate(self.market_card_widgets[level]):
                 if index < len(cards):
                     self.configure_card_button(widget, cards[index])
@@ -392,7 +400,7 @@ class MagicGemsApp(tk.Tk):
         )
         marker = "▶" if selected else "★" if can_buy else "·"
         compact_cost = "".join(f"{attribute.value}{amount}" for attribute, amount in card.cost.items()) or "无成本"
-        text = f"{marker} {card.card_id}{transformed}\n{attributes} {card.score}分\n{compact_cost}"
+        text = f"{marker} {card.card_id}{transformed}\n{attributes} {card.effective_score}分\n{compact_cost}"
         button.configure(
             text=text,
             image=self.card_images["selected" if selected else "affordable" if can_buy else "normal"],
@@ -448,6 +456,10 @@ class MagicGemsApp(tk.Tk):
                 temporary = f"+临时{player.temporary_light}" if player.temporary_light else ""
                 resource_details = " ".join(f"{attribute.value}{player.resources[attribute]}" for attribute in ATTRIBUTES) + f" 光{player.light}{temporary}"
             free_text = " 免购" if player.next_purchase_free else ""
+            if player.next_purchase_score_doubled:
+                free_text += " 下张分×2"
+            if player.next_attack_immune:
+                free_text += " 攻击免疫"
             specialization_items = []
             for attribute in ATTRIBUTES:
                 count = min(single_attribute_count(player, attribute), 3)
@@ -457,7 +469,7 @@ class MagicGemsApp(tk.Tk):
             specialization_progress = "".join(specialization_items) or "无"
             first_line = (
                 f"{'▶' if current else ''}{player.name} {player.score}分  "
-                f"资源{player.resource_count}/{player.resource_capacity}  购{len(player.purchased)}  预{len(player.reserved)}"
+                f"资源{player.resource_count}/{player.resource_capacity}  购{len(player.purchased)}  预{len(player.reserved)}  法师{len(player.wizard_cards)}/10"
             )
             if index != 0:
                 resource_details = " ".join(f"{attribute.value}{player.resources[attribute]}" for attribute in ATTRIBUTES) + f" 光{player.light}"
@@ -551,7 +563,7 @@ class MagicGemsApp(tk.Tk):
         form = f" ↓{card.transformed_from}" if card.transformed_from else ""
         self.selection_var.set(
             f"已选 {card.card_id}{form}  ·  {'/'.join(attribute.value for attribute in card.attributes)}  ·  "
-            f"{card.cost_text() or '无成本'}  ·  {card.score}分"
+            f"{card.cost_text() or '无成本'}  ·  {card.effective_score}分"
         )
         self.refresh()
 
@@ -702,7 +714,7 @@ class MagicGemsApp(tk.Tk):
             for index, card in enumerate(cards):
                 tk.Button(
                     options,
-                    text=f"{card.card_id}  {card.level}级  {card.cost_text()}  →{card.score}分",
+                    text=f"{card.card_id}  {card.level}级  {card.cost_text()}  →{card.effective_score}分",
                     width=24,
                     command=lambda selected=card: settle(Action("specialization", card=selected)),
                 ).grid(row=1 + index // 3, column=index % 3, padx=3, pady=3, sticky="ew")
