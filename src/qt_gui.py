@@ -57,6 +57,19 @@ _SAGE_SHARD_SOURCE: QPixmap | None = None
 _ATTRIBUTE_ICON_SOURCES: dict[Attribute, QPixmap] = {}
 
 
+def load_embedded_font() -> bool:
+    """Register the bundled Source Han Serif font with this Qt application."""
+    resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    font_path = resource_root / "media" / "fonts" / "SourceHanSerifSC-Regular.otf"
+    if not font_path.is_file():
+        return False
+    font_id = QFontDatabase.addApplicationFont(str(font_path))
+    if font_id < 0:
+        logging.getLogger(__name__).warning("Could not load bundled font: %s", font_path)
+        return False
+    return True
+
+
 def preferred_serif_family() -> str:
     """Use Source Han Serif when installed, with a native serif fallback."""
     installed = {family.casefold(): family for family in QFontDatabase.families()}
@@ -1316,6 +1329,7 @@ class MagicGemsQtApp(QMainWindow):
 
     def __init__(self, seed: int = 1, ai_battle: bool = False, interval: float = .5, seed_mode: str = "fixed") -> None:
         super().__init__()
+        load_embedded_font()
         self.ui_font_family = preferred_serif_family()
         app = QApplication.instance()
         if app is not None:
@@ -2176,7 +2190,14 @@ class MagicGemsQtApp(QMainWindow):
         wizard_scroll.setFrameShape(QFrame.Shape.NoFrame)
         wizard_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         wizard_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        wizard_scroll.viewport().setStyleSheet(
+            f"background:{RESERVED_AREA_BACKGROUND};"
+        )
         wizard_content = QWidget()
+        wizard_content.setObjectName("ownedWizardCardsContent")
+        wizard_content.setStyleSheet(
+            f"QWidget#ownedWizardCardsContent {{ background:{RESERVED_AREA_BACKGROUND}; }}"
+        )
         wizard_row = QHBoxLayout(wizard_content)
         wizard_row.setContentsMargins(2, 0, 2, 0)
         wizard_row.setSpacing(3)
@@ -2262,6 +2283,10 @@ class MagicGemsQtApp(QMainWindow):
                 card_view.raise_()
                 self.purchased_card_views[card.card_id] = card_view
             pile_content = QWidget()
+            pile_content.setObjectName("purchasedCardsPileContent")
+            pile_content.setStyleSheet(
+                f"QWidget#purchasedCardsPileContent {{ background:{RESERVED_AREA_BACKGROUND}; border:0; }}"
+            )
             pile_layout = QHBoxLayout(pile_content)
             pile_layout.setContentsMargins(0, 0, 0, 0)
             pile_layout.addStretch(1)

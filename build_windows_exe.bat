@@ -2,6 +2,7 @@
 setlocal
 cd /d "%~dp0"
 set PYTHONUTF8=1
+if exist "%LocalAppData%\Programs\Python\Launcher\py.exe" set "PATH=%LocalAppData%\Programs\Python\Launcher;%PATH%"
 
 where py >nul 2>nul
 if errorlevel 1 (
@@ -24,7 +25,7 @@ py -3.12 -m pip install "PySide6>=6.8" PyInstaller
 if errorlevel 1 goto :failed
 
 echo Building standalone GUI executable...
-py -3.12 -m PyInstaller --noconfirm --clean --onefile --windowed --name MagicGems --distpath dist --workpath build --specpath build --add-data "media:media" run_game.py
+py -3.12 -m PyInstaller --noconfirm --clean --onefile --windowed --name MagicGems --distpath dist --workpath build --specpath build --add-data "..\media:media" run_game.py
 if errorlevel 1 goto :failed
 
 if not exist "dist\MagicGems.exe" goto :failed
