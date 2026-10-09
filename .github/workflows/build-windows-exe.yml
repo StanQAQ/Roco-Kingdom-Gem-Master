@@ -30,7 +30,7 @@ jobs:
           --name "Roco Kingdom Gem Master"
           --distpath dist --workpath build --specpath build
           --exclude-module tests --exclude-module src.animation_demo
-          --exclude-module simulate_balance --add-data "media;media" run_game.py
+          --exclude-module simulate_balance --add-data "../media;media" run_game.py
 
       - name: Upload executable
         uses: actions/upload-artifact@v7
