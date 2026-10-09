@@ -72,7 +72,7 @@ def payment_for(player: Player, card: PetCard, selected_dual: list[Attribute] | 
         required_text = " ".join(f"{attribute.value}{amount}" for attribute, amount in required_cost.items() if amount)
         available_text = " ".join(f"{attribute.value}{player.resources[attribute]}" for attribute in required_cost)
         raise RuleError(
-            f"资源不足：{card.card_id} 折扣后需要 {required_text}，当前为 {available_text}，"
+            f"资源不足：{card.display_name} 折扣后需要 {required_text}，当前为 {available_text}，"
             f"还需要贤者碎晶 {light_needed}，已有贤者碎晶 {player.light + player.temporary_light}"
         )
     ordinary_light = min(player.light, light_needed)

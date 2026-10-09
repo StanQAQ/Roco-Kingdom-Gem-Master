@@ -22,18 +22,20 @@ jobs:
           python-version: "3.12"
 
       - name: Install build dependencies
-        run: python -m pip install --upgrade pip PySide6 PyInstaller
+        run: python -m pip install --upgrade pip "PySide6>=6.8" PyInstaller
 
       - name: Build one-file GUI executable
         run: >-
           python -m PyInstaller --noconfirm --clean --onefile --windowed
-          --name MagicGems --distpath dist --workpath build --specpath build
-          --add-data "media:media" run_game.py
+          --name "Roco Kingdom Gem Master"
+          --distpath dist --workpath build --specpath build
+          --exclude-module tests --exclude-module src.animation_demo
+          --exclude-module simulate_balance --add-data "media;media" run_game.py
 
       - name: Upload executable
         uses: actions/upload-artifact@v7
         with:
-          name: MagicGems-Windows-x64
-          path: dist/MagicGems.exe
+          name: RocoKingdomGemMaster-Windows-x64
+          path: dist/Roco Kingdom Gem Master.exe
           if-no-files-found: error
           retention-days: 14

@@ -1,10 +1,11 @@
-# Python 生成文件
+# Python 字节码与运行缓存
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+.Python
 
-# 虚拟环境
+# Python 虚拟环境与打包缓存
 .venv/
 venv/
 env/
@@ -14,8 +15,9 @@ __pypackages__/
 .nox/
 pip-wheel-metadata/
 
-# 测试、覆盖率和类型检查缓存
+# 测试、覆盖率和静态检查缓存
 .pytest_cache/
+.hypothesis/
 .coverage
 .coverage.*
 htmlcov/
@@ -23,38 +25,66 @@ htmlcov/
 .ruff_cache/
 .pyright/
 
-# 打包和构建产物
-build/
-dist/
+# PyInstaller 与 Python 构建产物
+/build/
+/dist/
+/release/
 *.egg-info/
 *.egg
+# 不忽略 *.spec：自定义打包配置应纳入版本控制。
 
-# 游戏运行日志和本地数据
-logs/
+# 可执行程序和分发压缩包；正式发布物放到 GitHub Releases
+*.exe
+*.msi
+*.app/
+*.dmg
+*.pkg
+*.zip
+*.7z
+
+# 游戏运行日志
+/logs/
 *.log
 
-# 自动对局测试输出（逐局数据、汇总和报告）。保留 analysis/ 下的说明文档。
+# 平衡模拟生成的数据；保留 analysis/ 下的 Markdown 报告和说明
 analysis/
 
-# Qt / IDE / 编辑器本地文件
+# IDE、编辑器和操作系统临时文件
 .vscode/
 .idea/
+*.iml
 *.user
 *.user.*
 *.suo
 *.swp
 *.swo
 .DS_Store
+._*
 Thumbs.db
+Desktop.ini
+~$*
 
-# Qt 构建与部署临时文件
+# Qt Creator 与 Qt 编译缓存
 .qtcreator/
 *.qmlc
 *.jsc
 
-# 本地环境配置（如将来添加）
+# 本地环境变量；保留可分享的模板
 .env
 .env.*
 !.env.example
 
+# 临时与备份文件
+*.tmp
+*.bak
+
+# 本地后续需求草稿
 后续需求.md
+
+# 本地测试与演示脚本；保留在工作区，不上传至 GitHub
+tests/
+/src/animation_demo.py
+/simulate_balance.py
+
+# 原始文件
+original_file/

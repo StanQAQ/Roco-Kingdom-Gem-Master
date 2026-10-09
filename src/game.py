@@ -30,6 +30,7 @@ class Game:
             if action.kind != "specialization":
                 raise RuleError("必须先结算当前属性专精效果")
             effect = self.state.pending_specializations[0]
+            owned_card_count = len(self.state.players[effect.player_index].purchased)
             message = resolve_specialization(
                 self.state,
                 effect,
@@ -38,6 +39,17 @@ class Game:
             )
             messages = [message]
             self.state.pending_specializations.pop(0)
+            if (
+                effect.attribute == Attribute.DARK
+                and effect.stage == 2
+                and len(self.state.players[effect.player_index].purchased) > owned_card_count
+            ):
+                # 恶魔契约夺来的单属性宠物会改变当前专精计数；新触发效果
+                # 紧接夺卡结算，先于其他排队效果处理，且仍属于本回合。
+                newly_triggered = detect_specializations(self.state, effect.player_index)
+                if newly_triggered:
+                    del self.state.pending_specializations[-len(newly_triggered):]
+                    self.state.pending_specializations[0:0] = newly_triggered
             if not self.state.pending_specializations:
                 messages.extend(self._finish_turn())
             return messages
@@ -69,6 +81,7 @@ class Game:
             effects = detect_specializations(self.state, self.state.current_player)
             messages.extend(
                 f"{player.name} 触发 {effect.attribute.value}系专精阶段{effect.stage}"
+                f"{f'（第{effect.occurrence}次）' if effect.occurrence > 1 else ''}"
                 for effect in effects
             )
         if not self.state.pending_specializations:

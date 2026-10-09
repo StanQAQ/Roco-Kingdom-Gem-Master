@@ -27,6 +27,7 @@ class PetCard:
     transformed_from: str | None = None
     score_multiplier: int = 1
     specialization_glows: set[Attribute] = field(default_factory=set)
+    name: str = ""
 
     @property
     def effective_score(self) -> int:
@@ -35,6 +36,11 @@ class PetCard:
     @property
     def is_dual(self) -> bool:
         return len(self.attributes) == 2
+
+    @property
+    def display_name(self) -> str:
+        """Return the card's visible name, falling back for custom/test cards."""
+        return self.name or self.card_id
 
     def cost_text(self) -> str:
         return " ".join(f"{attribute.value}{amount}" for attribute, amount in self.cost.items())
@@ -65,7 +71,7 @@ class Player:
     next_purchase_score_doubled: bool = False
     next_attack_immune: bool = False
     wizard_cards: list[WizardCard] = field(default_factory=list)
-    specialization_triggered: set[tuple[Attribute, int]] = field(default_factory=set)
+    specialization_triggered: set[tuple[Attribute, int, int]] = field(default_factory=set)
 
     @property
     def resource_count(self) -> int:
@@ -93,6 +99,7 @@ class SpecializationEffect:
     player_index: int
     attribute: Attribute
     stage: int
+    occurrence: int = 1
 
 
 @dataclass

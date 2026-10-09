@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from .cards import all_cards
 from .models import Attribute, GameState, PetCard, Player, SpecializationEffect
 from .rules import RuleError
 
@@ -20,7 +19,8 @@ STAGE_NAMES = {
 
 
 def specialization_name(effect: SpecializationEffect) -> str:
-    return f"{effect.attribute.value}系阶段{effect.stage}·{STAGE_NAMES[(effect.attribute, effect.stage)]}"
+    repeat = f"（第{effect.occurrence}次）" if effect.occurrence > 1 else ""
+    return f"{effect.attribute.value}系阶段{effect.stage}·{STAGE_NAMES[(effect.attribute, effect.stage)]}{repeat}"
 
 
 def single_attribute_count(player: Player, attribute: Attribute) -> int:
@@ -28,18 +28,26 @@ def single_attribute_count(player: Player, attribute: Attribute) -> int:
 
 
 def detect_specializations(state: GameState, player_index: int) -> list[SpecializationEffect]:
-    """检测购买后新跨过的 2/3 张门槛。"""
+    """检测购买后新跨过的专精门槛：2/3 张首次触发，之后每3张重复。"""
     player = state.players[player_index]
     found: list[SpecializationEffect] = []
     for attribute in Attribute:
         count = single_attribute_count(player, attribute)
-        for stage, threshold in ((1, 2), (2, 3)):
-            key = (attribute, stage)
-            if count >= threshold and key not in player.specialization_triggered:
-                player.specialization_triggered.add(key)
-                effect = SpecializationEffect(player_index, attribute, stage)
-                state.pending_specializations.append(effect)
-                found.append(effect)
+        due: list[tuple[int, int, int]] = []
+        for stage, first_threshold in ((1, 2), (2, 3)):
+            occurrence = 1
+            threshold = first_threshold
+            while count >= threshold:
+                key = (attribute, stage, occurrence)
+                if key not in player.specialization_triggered:
+                    due.append((threshold, stage, occurrence))
+                occurrence += 1
+                threshold += 3
+        for _threshold, stage, occurrence in sorted(due):
+            player.specialization_triggered.add((attribute, stage, occurrence))
+            effect = SpecializationEffect(player_index, attribute, stage, occurrence)
+            state.pending_specializations.append(effect)
+            found.append(effect)
     return found
 
 
@@ -65,41 +73,11 @@ def legal_player_targets(state: GameState, effect: SpecializationEffect) -> list
             for index, player in enumerate(state.players)
             if index != effect.player_index and any(player.resources.values())
         ]
-    candidates = [index for index in range(len(state.players)) if index != effect.player_index]
-    if not candidates:
-        return []
-    largest = max(len(state.players[index].purchased) for index in candidates)
-    if largest == 0:
-        return []
-    return [index for index in candidates if len(state.players[index].purchased) == largest]
-
-
-def _template_for_downgrade(card: PetCard) -> PetCard:
-    target_level = card.level - 1
-    candidates = [
-        template
-        for template in all_cards()
-        if template.level == target_level and template.attributes == card.attributes
+    return [
+        index
+        for index, player in enumerate(state.players)
+        if index != effect.player_index and player.purchased
     ]
-    if not candidates:
-        raise RuleError(f"{card.card_id} 没有可用的低一级对应形态")
-    digits = "".join(character for character in card.card_id if character.isdigit())
-    index = (int(digits) if digits else 0) % len(candidates)
-    return sorted(candidates, key=lambda item: item.card_id)[index]
-
-
-def downgrade_card(card: PetCard) -> tuple[int, int, str]:
-    """按同属性的低一级卡牌模板萌化，保留原卡 ID 作为对局身份。"""
-    if card.level <= 1:
-        raise RuleError("一级宠物不能继续萌化")
-    old_level = card.level
-    old_score = card.effective_score
-    template = _template_for_downgrade(card)
-    card.level = template.level
-    card.cost = dict(template.cost)
-    card.score = template.score
-    card.transformed_from = template.card_id
-    return old_level, old_score, template.card_id
 
 
 def _return_to_deck(state: GameState, card: PetCard) -> None:
@@ -110,23 +88,35 @@ def _return_to_deck(state: GameState, card: PetCard) -> None:
 
 
 def _burn_for_fire_stage_one(state: GameState, player_index: int) -> str:
-    targets = [
-        target
-        for index, target in enumerate(state.players)
-        if index != player_index and (target.reserved or target.purchased)
-    ]
-    if not targets:
-        return "没有可烧掉的对手预购卡或已购卡，效果未生效"
+    opponents = [target for index, target in enumerate(state.players) if index != player_index]
+    if not opponents:
+        return "没有可选的对手，效果未生效"
 
+    # Preserve the effect's original behavior when a burn is possible. Select
+    # an empty-handed opponent only when nobody has any eligible card, so the
+    # failed outcome can still name an actual selected player.
+    targets = [target for target in opponents if target.reserved or target.purchased]
+    if not targets:
+        targets = opponents
     target = state.rng.choice(targets)
+    if target.reserved or target.purchased:
+        blocked = _apply_attack_immunity(
+            state.players[player_index], target, "火系阶段1·引燃"
+        )
+        if blocked:
+            return blocked.partition("：")[2]
+
     if target.reserved:
         card = state.rng.choice(target.reserved)
         target.reserved.remove(card)
         _return_to_deck(state, card)
         return (
-            f"烧掉了{target.name}预购的{card.card_id}，归还至{card.level}级牌库；"
-            f"{target.name}保留预购获得的贤者碎晶"
+            f"选中玩家【{target.name}】：引燃其预购卡【{card.display_name}】，"
+            f"归还至{card.level}级牌库；其预购获得的贤者碎晶保留"
         )
+
+    if not target.purchased:
+        return f"选中玩家【{target.name}】：没有预购卡或已购卡可引燃，效果未生效"
 
     lowest_level = min(card.level for card, _ in target.purchased)
     candidates = [card for card, _ in target.purchased if card.level == lowest_level]
@@ -136,8 +126,8 @@ def _burn_for_fire_stage_one(state: GameState, player_index: int) -> str:
     target.score -= old_score
     state.discarded[card.level].append(card)
     return (
-        f"烧掉了{target.name}最低等级的{card.card_id}，该卡移出对局，"
-        f"{target.name}失去{old_score}分"
+        f"选中玩家【{target.name}】：没有预购卡，引燃其最低等级卡【{card.display_name}】，"
+        f"该卡移出对局，失去{old_score}分"
     )
 
 
@@ -175,7 +165,7 @@ def resolve_specialization(
         if card.cost[reduced] == 0:
             del card.cost[reduced]
         card.specialization_glows.add(Attribute.WATER)
-        return f"{name}：{card.card_id} 的{reduced.value}系成本 -1"
+        return f"{name}：{card.display_name} 的{reduced.value}系成本 -1"
 
     if (attribute, stage) == (Attribute.WATER, 2):
         player.next_purchase_free = True
@@ -197,7 +187,7 @@ def resolve_specialization(
         assert card is not None
         card.score += 1
         card.specialization_glows.add(Attribute.GRASS)
-        return f"{name}：{card.card_id} 的分数 +1"
+        return f"{name}：{card.display_name} 的分数 +1"
 
     if (attribute, stage) == (Attribute.GRASS, 2):
         grass_cards = sum(
@@ -218,18 +208,17 @@ def resolve_specialization(
         for index, owner in enumerate(state.players):
             if index == effect.player_index:
                 continue
-            eligible = [owned for owned, _ in owner.purchased if owned.level in (2, 3)]
-            if not eligible:
+            if not owner.purchased:
                 continue
+            highest_level = max(card.level for card, _ in owner.purchased)
+            eligible = [card for card, _ in owner.purchased if card.level == highest_level]
             chosen = state.rng.choice(eligible)
-            old_level, old_score, template_id = downgrade_card(chosen)
-            owner.score += chosen.effective_score - old_score
-            changed.append(
-                f"{owner.name}:{chosen.card_id} {old_level}级→{chosen.level}级，"
-                f"{old_score}分→{chosen.effective_score}分"
-            )
-        detail = "；".join(changed) if changed else "其他玩家没有二级或三级宠物"
-        return f"{name}：{detail}"
+            old_score = chosen.effective_score
+            chosen.score = 0
+            owner.score -= old_score
+            changed.append(f"{owner.name}:{chosen.display_name}（{highest_level}级）{old_score}分→0分")
+        detail = "；".join(changed) if changed else "其他玩家没有已购宠物"
+        return f"{name}：各自最高级宠物分数归零：{detail}"
 
     if (attribute, stage) == (Attribute.DARK, 1):
         legal_players = legal_player_targets(state, effect)
@@ -255,7 +244,7 @@ def resolve_specialization(
         if target_player is None and len(legal_players) == 1:
             target_player = legal_players[0]
         if target_player not in legal_players:
-            raise RuleError("恶魔契约必须从已购宠物数最多的其他玩家中选择")
+            raise RuleError("恶魔契约需要选择一名持有已购宠物的其他玩家")
         assert target_player is not None
         victim = state.players[target_player]
         blocked = _apply_attack_immunity(player, victim, name)
@@ -267,6 +256,6 @@ def resolve_specialization(
         stolen_card = stolen_entry[0]
         victim.score -= stolen_card.effective_score
         player.score += stolen_card.effective_score
-        return f"{name}：{player.name} 从 {victim.name} 偷走 {stolen_card.card_id}"
+        return f"{name}：{player.name} 从 {victim.name} 偷走 {stolen_card.display_name}"
 
     raise RuleError("未知的属性专精效果")

@@ -21,7 +21,7 @@ def show(game: Game) -> None:
     print("公共资源：" + " ".join(f"{a.value}{state.resource_pool[a]}" for a in ATTRIBUTES) + f" 光{state.light_pool}")
     print("魔法师市场：" + (" | ".join(f"{card.name}({card.requirement_text})" for card in state.wizard_market) or "空"))
     for level in (1, 2, 3):
-        print(f"{level}级市场：" + " | ".join(f"{card.card_id}({card.cost_text()}=>{card.effective_score})" for card in state.market.cards[level]))
+        print(f"{level}级市场：" + " | ".join(f"{card.display_name}({card.cost_text()}=>{card.effective_score})" for card in state.market.cards[level]))
     for player in state.players:
         discounts = " ".join(f"{a.value}{n}" for a, n in player.permanent_discounts.items() if n)
         wizard_cards = "、".join(card.name for card in player.wizard_cards) or "无"
@@ -66,12 +66,13 @@ def read_action(game: Game) -> Action:
         players = legal_player_targets(game.state, effect)
         print("结算属性专精：" + specialization_name(effect))
         if cards:
-            print("可选卡牌：" + " ".join(card.card_id for card in cards))
-            card_id = input("选择卡牌编号：").strip().upper()
-            card = next((item for item in cards if item.card_id == card_id), None)
-            if card is None:
-                raise RuleError("无效的专精卡牌目标")
-            return Action("specialization", card=card)
+            print("可选卡牌：")
+            for index, card in enumerate(cards, start=1):
+                print(f"  {index}. {card.display_name}（{card.level}级，{card.cost_text() or '无成本'}，{card.effective_score}分）")
+            choice = int(input("选择卡牌序号：").strip())
+            if not 1 <= choice <= len(cards):
+                raise RuleError("无效的专精卡牌选择")
+            return Action("specialization", card=cards[choice - 1])
         if players:
             print("可选玩家：" + " ".join(f"{index}:{game.state.players[index].name}" for index in players))
             target = int(input("选择玩家编号：").strip())
@@ -87,8 +88,19 @@ def read_action(game: Game) -> Action:
     if command == "s":
         return Action("same", attributes=(Attribute(input("属性：").strip()),))
     level = int(input("等级："))
-    card_id = input("卡牌编号：").strip().upper()
-    card = next(card for card in game.state.market.cards[level] + player.reserved if card.card_id == card_id)
+    candidates = [
+        *((card, "市场") for card in game.state.market.cards[level]),
+        *((card, "预购") for card in player.reserved),
+    ]
+    if not candidates:
+        raise RuleError(f"{level}级市场没有可选卡牌")
+    print("可选卡牌：")
+    for index, (card, zone) in enumerate(candidates, start=1):
+        print(f"  {index}. {card.display_name}（{zone}，{card.level}级，{card.cost_text() or '无成本'}，{card.effective_score}分）")
+    choice = int(input("选择卡牌序号：").strip())
+    if not 1 <= choice <= len(candidates):
+        raise RuleError("无效的卡牌选择")
+    card = candidates[choice - 1][0]
     if command == "r":
         return Action("reserve", card=card)
     choices = tuple(Attribute(value) for value in input("双属性折扣选择（每张双属性宠物输入一个属性）：").strip()) if player.dual_cards() else ()
@@ -96,7 +108,7 @@ def read_action(game: Game) -> Action:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="洛克王国：魔法宝石 MVP")
+    parser = argparse.ArgumentParser(description="洛克王国：魔法宝石")
     seed_group = parser.add_mutually_exclusive_group()
     seed_group.add_argument("--seed", type=int, help="使用指定的固定随机种子")
     seed_group.add_argument("--random-seed", action="store_true", help="每次启动时自动生成随机种子")
@@ -112,8 +124,13 @@ def main() -> None:
             from PySide6.QtWidgets import QApplication  # noqa: F401
         except ImportError:
             parser.error("Qt6 图形界面需要安装 PySide6：python -m pip install PySide6")
-    seed, seed_mode = select_seed(args.seed, args.random_seed, default_random=args.gui)
-    print("本局使用" + seed_description(seed, seed_mode))
+    if args.gui and not args.ai_battle:
+        # 普通 GUI 要等玩家选定具体难度后再生成随机种子。
+        seed = args.seed
+        seed_mode = "fixed" if seed is not None else "random"
+    else:
+        seed, seed_mode = select_seed(args.seed, args.random_seed, default_random=args.gui)
+        print("本局使用" + seed_description(seed, seed_mode))
     if args.gui:
         from .qt_gui import MagicGemsQtApp
 

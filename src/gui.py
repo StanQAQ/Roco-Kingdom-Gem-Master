@@ -10,13 +10,19 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .ai import choose_action
-from .cards import build_decks
+from .cards import build_decks, name_for_card_id
 from .game import Action, Game
 from .models import ATTRIBUTES, Attribute, PetCard, Player
 from .rules import RuleError, create_state, payment_for
 from .seeding import seed_description, select_seed
 from .specializations import legal_card_targets, legal_player_targets, single_attribute_count, specialization_name
-from .theme import RESOURCE_COLORS as ATTRIBUTE_COLORS
+from .theme import (
+    CARD_AFFORDABLE_COLOR, CARD_FACE_COLOR, CARD_SELECTED_COLOR,
+    CARD_FACE_CREAM_COLOR, LEGACY_CURRENT_PLAYER_COLOR, LEGACY_HEADER_COLOR,
+    LEGACY_LOG_BACKGROUND, LEGACY_PLAYER_COLOR, LEGACY_RESOURCE_BACKGROUND,
+    LEGACY_RESOURCE_SELECTED_TEXT, LEGACY_SIDEBAR_COLOR, LEGACY_TABLETOP_COLOR,
+    RESOURCE_COLORS as ATTRIBUTE_COLORS,
+)
 
 
 class MagicGemsApp(tk.Tk):
@@ -30,7 +36,7 @@ class MagicGemsApp(tk.Tk):
         self.attributes("-topmost", True)
         self.geometry("1260x820")
         self.minsize(1000, 700)
-        self.configure(bg="#f4efe6")
+        self.configure(bg=LEGACY_TABLETOP_COLOR)
 
         self.ai_battle = ai_battle
         self.ai_interval = max(0.0, interval)
@@ -70,57 +76,57 @@ class MagicGemsApp(tk.Tk):
         self.log(f"对局开始，{seed_description(self.seed, self.seed_mode)}")
 
     def build_ui(self) -> None:
-        header = tk.Frame(self, bg="#263238", height=72)
+        header = tk.Frame(self, bg=LEGACY_HEADER_COLOR, height=72)
         header.pack(fill="x")
         self.display_button(header, text="魔法宝石", font=("Songti SC", 18, "bold")).pack(side="left", padx=18, pady=10)
         self.display_button(header, textvariable=self.status_var, font=("Songti SC", 11)).pack(side="right", padx=18, pady=10)
 
-        body = tk.Frame(self, bg="#f4efe6")
+        body = tk.Frame(self, bg=LEGACY_TABLETOP_COLOR)
         body.pack(fill="both", expand=True, padx=18, pady=16)
-        self.market_frame = tk.Frame(body, bg="#f4efe6")
+        self.market_frame = tk.Frame(body, bg=LEGACY_TABLETOP_COLOR)
         self.market_frame.pack(side="left", fill="both", expand=True)
 
-        sidebar_outer = tk.Frame(body, bg="#e8dfd1", width=360)
+        sidebar_outer = tk.Frame(body, bg=LEGACY_SIDEBAR_COLOR, width=360)
         sidebar_outer.pack(side="right", fill="y", padx=(16, 0))
         sidebar_outer.pack_propagate(False)
-        self.sidebar_canvas = tk.Canvas(sidebar_outer, bg="#e8dfd1", highlightthickness=0)
+        self.sidebar_canvas = tk.Canvas(sidebar_outer, bg=LEGACY_SIDEBAR_COLOR, highlightthickness=0)
         sidebar_scrollbar = ttk.Scrollbar(sidebar_outer, orient="vertical", command=self.sidebar_canvas.yview)
         self.sidebar_canvas.configure(yscrollcommand=sidebar_scrollbar.set)
         sidebar_scrollbar.pack(side="right", fill="y")
         self.sidebar_canvas.pack(side="left", fill="both", expand=True)
-        self.sidebar_content = tk.Frame(self.sidebar_canvas, bg="#e8dfd1")
+        self.sidebar_content = tk.Frame(self.sidebar_canvas, bg=LEGACY_SIDEBAR_COLOR)
         sidebar_window = self.sidebar_canvas.create_window((0, 0), window=self.sidebar_content, anchor="nw")
         self.sidebar_content.bind("<Configure>", lambda _event: self.sidebar_canvas.configure(scrollregion=self.sidebar_canvas.bbox("all")))
         self.sidebar_canvas.bind("<Configure>", lambda event: self.sidebar_canvas.itemconfigure(sidebar_window, width=event.width))
 
         # 右侧全部内容共用外层滚动区；四位玩家固定排在同一块区域。
-        controls = tk.Frame(self.sidebar_content, bg="#e8dfd1", padx=14, pady=5)
+        controls = tk.Frame(self.sidebar_content, bg=LEGACY_SIDEBAR_COLOR, padx=14, pady=5)
         controls.pack(fill="x")
         self.display_button(
             controls,
             textvariable=self.selection_var,
             font=("Songti SC", 10),
         ).pack(fill="x", pady=(0, 3))
-        self.resource_frame = tk.Frame(controls, bg="#e8dfd1")
+        self.resource_frame = tk.Frame(controls, bg=LEGACY_SIDEBAR_COLOR)
         self.resource_frame.pack(fill="x", pady=(0, 2))
-        self.action_frame = tk.Frame(controls, bg="#e8dfd1")
+        self.action_frame = tk.Frame(controls, bg=LEGACY_SIDEBAR_COLOR)
         self.action_frame.pack(fill="x", pady=(0, 2))
         ttk.Separator(self.sidebar_content, orient="horizontal").pack(fill="x", padx=12, pady=(0, 2))
 
-        self.details_outer = tk.Frame(self.sidebar_content, bg="#e8dfd1")
+        self.details_outer = tk.Frame(self.sidebar_content, bg=LEGACY_SIDEBAR_COLOR)
         self.details_outer.pack(fill="x")
 
-        self.log_outer = tk.Frame(self.details_outer, bg="#e8dfd1", height=130)
+        self.log_outer = tk.Frame(self.details_outer, bg=LEGACY_SIDEBAR_COLOR, height=130)
         self.log_outer.pack(fill="x", side="bottom")
         self.log_outer.pack_propagate(False)
         self.display_button(self.log_outer, text="行动记录（可滚动查看全部）", font=("Songti SC", 10, "bold")).pack(fill="x", padx=8, pady=(3, 2))
-        log_body = tk.Frame(self.log_outer, bg="#e8dfd1")
+        log_body = tk.Frame(self.log_outer, bg=LEGACY_SIDEBAR_COLOR)
         log_body.pack(fill="both", expand=True)
         self.log_scrollbar = ttk.Scrollbar(log_body, orient="vertical", command=self.scroll_log)
         self.log_scrollbar.pack(side="right", fill="y")
-        self.log_entries_frame = tk.Frame(log_body, bg="#f8f4ed", padx=3, pady=2)
+        self.log_entries_frame = tk.Frame(log_body, bg=LEGACY_LOG_BACKGROUND, padx=3, pady=2)
         self.log_entries_frame.pack(side="left", fill="both", expand=True)
-        self.log_entry_image = self.solid_image(268, 35, "#fffaf0")
+        self.log_entry_image = self.solid_image(268, 35, CARD_FACE_CREAM_COLOR)
         self.log_messages: list[str] = []
         self.log_offset = 0
         self.log_visible_count = 1
@@ -139,14 +145,14 @@ class MagicGemsApp(tk.Tk):
             for _ in range(self.log_visible_count)
         ]
 
-        players_outer = tk.Frame(self.details_outer, bg="#e8dfd1")
+        players_outer = tk.Frame(self.details_outer, bg=LEGACY_SIDEBAR_COLOR)
         players_outer.pack(fill="both", expand=True)
         self.display_button(players_outer, text="玩家状态", font=("Songti SC", 10, "bold")).pack(fill="x", padx=8, pady=(0, 2))
-        self.players_frame = tk.Frame(players_outer, bg="#e8dfd1", padx=8, pady=1)
+        self.players_frame = tk.Frame(players_outer, bg=LEGACY_SIDEBAR_COLOR, padx=8, pady=1)
         self.players_frame.pack(fill="x")
         self.player_card_images = {
-            "normal": self.solid_image(270, 32, "#f2ede6"),
-            "current": self.solid_image(270, 32, "#e5e9d8"),
+            "normal": self.solid_image(270, 32, LEGACY_PLAYER_COLOR),
+            "current": self.solid_image(270, 32, LEGACY_CURRENT_PLAYER_COLOR),
         }
 
         self.bind_all("<MouseWheel>", self.sidebar_mousewheel, add="+")
@@ -254,7 +260,7 @@ class MagicGemsApp(tk.Tk):
     def start_game_log(self) -> None:
         logs_dir = Path(__file__).resolve().parent.parent / "logs"
         logs_dir.mkdir(exist_ok=True)
-        log_name = f"magic_gems_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.log"
+        log_name = f"RocoKingdomGemMaster_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.log"
         self.game_log_path = logs_dir / log_name
         self.game_logger = logging.getLogger(f"magic_gems.game.{id(self)}")
         self.game_logger.setLevel(logging.INFO)
@@ -308,16 +314,16 @@ class MagicGemsApp(tk.Tk):
         state = self.game.state
         if not hasattr(self, "market_card_widgets"):
             self.card_images = {
-                "normal": self.solid_image(self.CARD_WIDTH, self.CARD_HEIGHT, "#fff6e8"),
-                "affordable": self.solid_image(self.CARD_WIDTH, self.CARD_HEIGHT, "#dceecf"),
-                "selected": self.solid_image(self.CARD_WIDTH, self.CARD_HEIGHT, "#f4d484"),
+                "normal": self.solid_image(self.CARD_WIDTH, self.CARD_HEIGHT, CARD_FACE_COLOR),
+                "affordable": self.solid_image(self.CARD_WIDTH, self.CARD_HEIGHT, CARD_AFFORDABLE_COLOR),
+                "selected": self.solid_image(self.CARD_WIDTH, self.CARD_HEIGHT, CARD_SELECTED_COLOR),
             }
             self.display_button(self.market_frame,centered=True, text="公共宠物市场", font=("Songti SC", 15, "bold")).pack(fill="x", pady=(0, 8))
             self.market_card_widgets: dict[int, list[tk.Button]] = {}
             for level in (1, 2, 3):
-                row = tk.Frame(self.market_frame, bg="#f4efe6")
+                row = tk.Frame(self.market_frame, bg=LEGACY_TABLETOP_COLOR)
                 row.pack(fill="x", pady=(0, 10))
-                centered_line = tk.Frame(row, bg="#f4efe6")
+                centered_line = tk.Frame(row, bg=LEGACY_TABLETOP_COLOR)
                 centered_line.pack(anchor="center")
                 level_label = self.display_button(
                     centered_line,
@@ -327,7 +333,7 @@ class MagicGemsApp(tk.Tk):
                     width=10,
                 )
                 level_label.pack(side="left", padx=(0, 6))
-                cards = tk.Frame(centered_line, bg="#f4efe6")
+                cards = tk.Frame(centered_line, bg=LEGACY_TABLETOP_COLOR)
                 cards.pack(side="left")
                 widgets = [
                     tk.Button(
@@ -343,10 +349,10 @@ class MagicGemsApp(tk.Tk):
                     for _ in range(5)
                 ]
                 self.market_card_widgets[level] = widgets
-            reserved = tk.Frame(self.market_frame, bg="#f4efe6")
+            reserved = tk.Frame(self.market_frame, bg=LEGACY_TABLETOP_COLOR)
             reserved.pack(fill="x", pady=(12, 0))
             self.display_button(reserved, text="你的预购区", font=("Songti SC", 10, "bold")).pack(fill="x")
-            reserved_cards = tk.Frame(reserved, bg="#f4efe6")
+            reserved_cards = tk.Frame(reserved, bg=LEGACY_TABLETOP_COLOR)
             reserved_cards.pack(fill="x", pady=4)
             self.reserved_card_widgets = [
                 tk.Button(reserved_cards, image=self.card_images["normal"], compound="center", font=("Songti SC", 8), justify="center", wraplength=self.CARD_WIDTH - 8, padx=1, pady=1)
@@ -387,7 +393,7 @@ class MagicGemsApp(tk.Tk):
 
     def configure_card_button(self, button: tk.Button, card: PetCard) -> None:
         attributes = "/".join(attribute.value for attribute in card.attributes)
-        transformed = f"↓{card.transformed_from}" if card.transformed_from else ""
+        transformed = f"↓{name_for_card_id(card.transformed_from)}" if card.transformed_from else ""
         selected = card is self.selected_card
         can_buy = self.can_current_player_buy(card)
         card_action_enabled = (
@@ -400,7 +406,7 @@ class MagicGemsApp(tk.Tk):
         )
         marker = "▶" if selected else "★" if can_buy else "·"
         compact_cost = "".join(f"{attribute.value}{amount}" for attribute, amount in card.cost.items()) or "无成本"
-        text = f"{marker} {card.card_id}{transformed}\n{attributes} {card.effective_score}分\n{compact_cost}"
+        text = f"{marker} {card.display_name}{transformed}\n{attributes} {card.effective_score}分\n{compact_cost}"
         button.configure(
             text=text,
             image=self.card_images["selected" if selected else "affordable" if can_buy else "normal"],
@@ -484,13 +490,13 @@ class MagicGemsApp(tk.Tk):
     def render_actions(self) -> None:
         if not hasattr(self, "resource_buttons"):
             self.display_button(self.resource_frame, text="选择资源方式", font=("Songti SC", 9, "bold")).pack(fill="x", pady=(0, 3))
-            mode_row = tk.Frame(self.resource_frame, bg="#e8dfd1")
+            mode_row = tk.Frame(self.resource_frame, bg=LEGACY_SIDEBAR_COLOR)
             mode_row.pack(fill="x", pady=3)
             self.different_button = tk.Button(mode_row, text="三种各一枚", command=lambda: self.set_resource_mode("different"))
             self.different_button.pack(side="left", fill="x", expand=True, padx=(0, 5), pady=2)
             self.same_button = tk.Button(mode_row, text="同种两枚", command=lambda: self.set_resource_mode("same"))
             self.same_button.pack(side="left", fill="x", expand=True, pady=2)
-            attrs = tk.Frame(self.resource_frame, bg="#e8dfd1")
+            attrs = tk.Frame(self.resource_frame, bg=LEGACY_SIDEBAR_COLOR)
             attrs.pack(fill="x", pady=3)
             self.resource_buttons: dict[Attribute, tk.Button] = {}
             self.resource_images = {
@@ -511,10 +517,10 @@ class MagicGemsApp(tk.Tk):
                 )
                 button.grid(row=0, column=index, padx=2)
                 self.resource_buttons[attribute] = button
-            self.resource_status_image = self.solid_image(280, 30, "#f7eee0")
+            self.resource_status_image = self.solid_image(280, 30, LEGACY_RESOURCE_BACKGROUND)
             self.resource_status_button = tk.Button(self.resource_frame, image=self.resource_status_image, compound="center", text="", font=("Songti SC", 9), command=lambda: None, cursor="arrow", takefocus=False)
             self.resource_status_button.pack(pady=3)
-            resource_actions = tk.Frame(self.resource_frame, bg="#e8dfd1")
+            resource_actions = tk.Frame(self.resource_frame, bg=LEGACY_SIDEBAR_COLOR)
             resource_actions.pack(fill="x", pady=(0, 8))
             self.confirm_resource_button = tk.Button(resource_actions, text="确定获取", command=self.confirm_resources)
             self.confirm_resource_button.pack(side="left", fill="x", expand=True, padx=(0, 5), pady=2)
@@ -541,7 +547,7 @@ class MagicGemsApp(tk.Tk):
             self.resource_buttons[attribute].configure(
                 text=f"{'✓' if selected else ''}{attribute.value}{state.resource_pool[attribute]}",
                 image=self.resource_images[attribute][1 if selected else 0],
-                fg="#ffffff" if selected else "#263238",
+                fg=LEGACY_RESOURCE_SELECTED_TEXT if selected else LEGACY_HEADER_COLOR,
                 relief="sunken" if selected else "raised",
                 state="normal",
                 cursor="hand2" if available else "arrow",
@@ -560,9 +566,9 @@ class MagicGemsApp(tk.Tk):
         if self.game.state.current_player != 0 or self.game.state.finished or self.game.state.pending_specializations or self.resource_mode is not None or self.discount_dialog is not None:
             return
         self.selected_card = card
-        form = f" ↓{card.transformed_from}" if card.transformed_from else ""
+        form = f" ↓{name_for_card_id(card.transformed_from)}" if card.transformed_from else ""
         self.selection_var.set(
-            f"已选 {card.card_id}{form}  ·  {'/'.join(attribute.value for attribute in card.attributes)}  ·  "
+            f"已选 {card.display_name}{form}  ·  {'/'.join(attribute.value for attribute in card.attributes)}  ·  "
             f"{card.cost_text() or '无成本'}  ·  {card.effective_score}分"
         )
         self.refresh()
@@ -643,12 +649,12 @@ class MagicGemsApp(tk.Tk):
             card = dual_cards[index]
             current = choices[index]
             choices[index] = card.attributes[1] if current == card.attributes[0] else card.attributes[0]
-            selectors[index].configure(text=f"{card.card_id}  ·  当前折扣：{choices[index].value}系（点击切换）")
+            selectors[index].configure(text=f"{card.display_name}  ·  当前折扣：{choices[index].value}系（点击切换）")
 
         for index, card in enumerate(dual_cards):
             selector = tk.Button(
                 dialog,
-                text=f"{card.card_id}  ·  当前折扣：{choices[index].value}系（点击切换）",
+                text=f"{card.display_name}  ·  当前折扣：{choices[index].value}系（点击切换）",
                 command=lambda selected=index: toggle_choice(selected),
                 padx=12,
                 pady=6,
@@ -661,7 +667,7 @@ class MagicGemsApp(tk.Tk):
             self.discount_choice_pending = False
             self.discount_dialog = None
             dialog.destroy()
-            choice_text = "、".join(f"{card.card_id}->{choice.value}" for card, choice in zip(dual_cards, self.next_dual_choices))
+            choice_text = "、".join(f"{card.display_name}->{choice.value}" for card, choice in zip(dual_cards, self.next_dual_choices))
             self.log(f"本次双属性折扣：{choice_text}")
             self.refresh()
 
@@ -714,7 +720,7 @@ class MagicGemsApp(tk.Tk):
             for index, card in enumerate(cards):
                 tk.Button(
                     options,
-                    text=f"{card.card_id}  {card.level}级  {card.cost_text()}  →{card.effective_score}分",
+                    text=f"{card.display_name}  {card.level}级  {card.cost_text()}  →{card.effective_score}分",
                     width=24,
                     command=lambda selected=card: settle(Action("specialization", card=selected)),
                 ).grid(row=1 + index // 3, column=index % 3, padx=3, pady=3, sticky="ew")
@@ -760,7 +766,7 @@ class MagicGemsApp(tk.Tk):
             self.resource_selection.clear()
             self.refresh()
         except (RuleError, ValueError) as error:
-            card_text = action.card.card_id if action.card is not None else "无"
+            card_text = action.card.display_name if action.card is not None else "无"
             choices_text = "、".join(attribute.value for attribute in action.dual_choices) or "无"
             self.game_logger.warning("操作无效：%s | 动作=%s 卡牌=%s 双属性选择=%s", error, action.kind, card_text, choices_text)
             messagebox.showwarning("操作无效", str(error))
@@ -774,9 +780,9 @@ class MagicGemsApp(tk.Tk):
 
     def action_text(self, action: Action) -> str:
         if action.kind == "buy":
-            return f"购买 {action.card.card_id if action.card else ''}"
+            return f"购买 {action.card.display_name if action.card else ''}"
         if action.kind == "reserve":
-            return f"预购 {action.card.card_id if action.card else ''}"
+            return f"预购 {action.card.display_name if action.card else ''}"
         if action.kind == "different":
             resources = "、".join(f"{attribute.value}1" for attribute in action.attributes)
             return f"获取资源：{resources}"

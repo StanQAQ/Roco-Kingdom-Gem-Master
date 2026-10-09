@@ -6,6 +6,74 @@ from .models import Attribute, PetCard, normalize_cost
 
 A = Attribute
 
+# 卡牌名称以卡牌.md为准；卡号仅用于游戏逻辑和定位卡片。
+CARD_NAMES = {
+    'S01': '水蓝蓝', 'S02': '板板壳', 'S03': '小鼠獭', 'S04': '水滴蛇', 'S05': '乖乖鹄',
+    'S06': '护主犬', 'S07': '小勇狮', 'S08': '热团团', 'S09': '火花', 'S10': '红火尾',
+    'S11': '蹦蹦果', 'S12': '小草虫', 'S13': '松仔', 'S14': '喵喵', 'S15': '格兰种子',
+    'S16': '加灵', 'S17': '蝴蝶陶陶', 'S18': '逗逗', 'S19': '大耳帽兜', 'S20': '毛毛',
+    'S21': '小帕尔', 'S22': '小夜', 'S23': '阿米亚特', 'S24': '恶魔叮', 'S25': '恶魔小萝',
+    'D01': '熔岩布丁', 'D02': '熔岩布丁', 'D03': '抹茶布丁', 'D04': '加油海葵', 'D05': '甜田螺',
+    'D06': '芽眼魔', 'D07': '苞米仔', 'D08': '柴渣虫', 'D09': '火山丢丢', 'D10': '治愈兔',
+    'D11': '治愈兔', 'D12': '乌达', 'D13': '乌达', 'D14': '蒲公英', 'D15': '蒲公英',
+    'S26': '波波拉', 'S27': '咔咔壳', 'S28': '燕尾獭', 'S29': '水蛇锁', 'S30': '音速犬',
+    'S31': '炽焰狮', 'S32': '雅丹鬃', 'S33': '焰火', 'S34': '蹦蹦果', 'S35': '草衣虫',
+    'S36': '松叶羊', 'S37': '喵呜', 'S38': '加益', 'S39': '爬爬', 'S40': '气球猫',
+    'S41': '帽兜娃娃', 'S42': '帕尔萨斯', 'S43': '紫夜', 'S44': '阿米樱',
+    'D16': '超级熔岩布丁', 'D17': '燃燃熔岩布丁', 'D18': '抹茶茉莉布丁', 'D19': '特浓抹茶布丁',
+    'D20': '叶眼魔', 'D21': '火山卡卡虫', 'D22': '燃薪虫', 'D23': '红丝绒', 'D24': '红丝绒',
+    'D25': '迷你乌', 'D26': '蒲公英娃娃',
+    'S45': '水灵', 'S46': '化蝶', 'S47': '火神', 'S48': '魔力猫', 'S49': '龙息帕尔',
+    'S50': '水泡壳', 'S51': '朔夜伊芙', 'S52': '加尔', 'S53': '翠顶夫人', 'S54': '罗隐',
+    'S55': '风暴战犬', 'S56': '花衣蝶', 'S57': '梦想三三', 'S58': '恶魔男爵', 'S59': '雪影娃娃',
+    'S60': '针叶巡林', 'D27': '障眼魔', 'D28': '红绒十字', 'D29': '卡洛儿', 'D30': '乌拉塔',
+}
+
+
+def name_for_card_id(card_id: str | None) -> str:
+    """Return a visible card name for a stored card identifier."""
+    if card_id is None:
+        return ""
+    return CARD_NAMES.get(card_id, card_id)
+
+# 卡牌.md中与旧牌库不同的属性、分数和成本，格式为：(属性, 分数, 成本)。
+CARD_DATA_CORRECTIONS = {
+    'D04': ((A.WATER, A.CUTE), 0, [(A.FIRE, 1), (A.CUTE, 1), (A.DARK, 2)]),
+    'D05': ((A.WATER, A.CUTE), 1, [(A.FIRE, 2), (A.CUTE, 1), (A.DARK, 1)]),
+    'D07': ((A.FIRE, A.GRASS), 1, [(A.WATER, 1), (A.GRASS, 1), (A.CUTE, 2)]),
+    'S26': ((A.WATER,), 1, [(A.FIRE, 3), (A.GRASS, 2), (A.CUTE, 2)]),
+    'S27': ((A.WATER,), 1, [(A.FIRE, 3), (A.GRASS, 2), (A.CUTE, 2)]),
+    'S28': ((A.WATER,), 2, [(A.FIRE, 5)]),
+    'S29': ((A.WATER,), 3, [(A.FIRE, 6)]),
+    'S30': ((A.FIRE,), 2, [(A.WATER, 4), (A.GRASS, 2), (A.CUTE, 1)]),
+    'S31': ((A.FIRE,), 2, [(A.WATER, 5), (A.GRASS, 3)]),
+    'S32': ((A.FIRE,), 2, [(A.WATER, 5), (A.GRASS, 3)]),
+    'S33': ((A.FIRE,), 2, [(A.WATER, 4), (A.GRASS, 2), (A.CUTE, 1)]),
+    'S34': ((A.GRASS,), 2, [(A.WATER, 4), (A.FIRE, 2), (A.CUTE, 1)]),
+    'S35': ((A.GRASS,), 1, [(A.WATER, 3), (A.FIRE, 3), (A.CUTE, 2)]),
+    'S36': ((A.GRASS,), 2, [(A.WATER, 5)]),
+    'S37': ((A.GRASS,), 1, [(A.WATER, 3), (A.FIRE, 3), (A.CUTE, 2)]),
+    'S38': ((A.CUTE,), 1, [(A.WATER, 3), (A.FIRE, 3), (A.GRASS, 2)]),
+    'S39': ((A.CUTE,), 2, [(A.WATER, 5)]),
+    'S40': ((A.CUTE,), 2, [(A.WATER, 5), (A.FIRE, 3)]),
+    'S41': ((A.CUTE,), 2, [(A.WATER, 5), (A.FIRE, 3)]),
+    'S42': ((A.DARK,), 1, [(A.WATER, 3), (A.FIRE, 2), (A.GRASS, 2)]),
+    'S43': ((A.DARK,), 2, [(A.WATER, 4), (A.FIRE, 2), (A.GRASS, 1)]),
+    'S44': ((A.DARK,), 3, [(A.WATER, 6)]),
+    'D16': ((A.WATER, A.FIRE), 2, [(A.GRASS, 5), (A.CUTE, 3)]),
+    'D17': ((A.WATER, A.FIRE), 2, [(A.GRASS, 5)]),
+    'D18': ((A.WATER, A.GRASS), 3, [(A.FIRE, 6)]),
+    'D19': ((A.WATER, A.GRASS), 1, [(A.FIRE, 3), (A.CUTE, 2), (A.DARK, 2)]),
+    'D20': ((A.WATER, A.DARK), 1, [(A.FIRE, 3), (A.GRASS, 3), (A.CUTE, 2)]),
+    'D21': ((A.FIRE, A.GRASS), 1, [(A.WATER, 3), (A.CUTE, 2), (A.DARK, 2)]),
+    'D22': ((A.FIRE, A.GRASS), 1, [(A.WATER, 3), (A.CUTE, 3), (A.DARK, 2)]),
+    'D23': ((A.FIRE, A.CUTE), 3, [(A.WATER, 6)]),
+    'D24': ((A.FIRE, A.CUTE), 2, [(A.WATER, 4), (A.GRASS, 2), (A.DARK, 1)]),
+    'D25': ((A.FIRE, A.DARK), 3, [(A.WATER, 6)]),
+    'D26': ((A.GRASS, A.CUTE), 2, [(A.WATER, 5)]),
+    'D29': ((A.WATER, A.CUTE), 5, [(A.CUTE, 3), (A.WATER, 7)]),
+}
+
 
 def _card(card_id: str, level: int, attributes: tuple[A, ...], score: int, *cost: tuple[A, int]) -> PetCard:
     return PetCard(card_id, level, attributes, normalize_cost(cost), score)
@@ -83,6 +151,11 @@ def all_cards() -> list[PetCard]:
     ]
     for card_id, attributes, score, cost in dual_three:
         cards.append(_card(card_id, 3, attributes, score, *cost))
+    for card in cards:
+        card.name = CARD_NAMES[card.card_id]
+        if correction := CARD_DATA_CORRECTIONS.get(card.card_id):
+            card.attributes, card.score, cost = correction
+            card.cost = normalize_cost(cost)
     return cards
 
 
