@@ -2172,6 +2172,14 @@ class MagicGemsQtApp(QMainWindow):
         scroll.show()
 
     def render_purchased(self) -> None:
+        # A dual card is reparented to game_page while it is being dragged so
+        # it can float above the scroll area. It is no longer owned by the
+        # purchased-panel layout, so clear it explicitly before rebuilding the
+        # card views; otherwise the old view remains visible over the new one.
+        for card_view in getattr(self, "purchased_card_views", {}).values():
+            if isinstance(card_view, DraggableDualCard) and card_view.parentWidget() is self.game_page:
+                card_view.hide()
+                card_view.deleteLater()
         self.clear_section_body(self.purchased_layout)
         player = self.game.state.players[0]
         container = QWidget()
@@ -3856,7 +3864,7 @@ class MagicGemsQtApp(QMainWindow):
         elif (
             event.get("player_index") == 0
             and event.get("zone") == "purchased"
-            and event.get("kind") in ("market-purchase", "acquire")
+            and event.get("kind") in ("market-purchase", "acquire", "status-impact")
         ):
             overlay.setProperty("purchasedCardId", event["card_id"])
         self.impact_animation_overlay = overlay

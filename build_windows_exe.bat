@@ -25,12 +25,12 @@ py -3.12 -m pip install "PySide6>=6.8" PyInstaller
 if errorlevel 1 goto :failed
 
 echo Building standalone GUI executable...
-py -3.12 -m PyInstaller --noconfirm --clean --onefile --windowed --name MagicGems --distpath dist --workpath build --specpath build --add-data "..\media:media" run_game.py
+py -3.12 -m PyInstaller --noconfirm --clean --onefile --windowed --name "Roco Kingdom Gem Master" --distpath dist --workpath build --specpath build --add-data "..\media:media" run_game.py
 if errorlevel 1 goto :failed
 
-if not exist "dist\MagicGems.exe" goto :failed
+if not exist "dist\Roco Kingdom Gem Master.exe" goto :failed
 echo.
-echo Build complete: %CD%\dist\MagicGems.exe
+echo Build complete: %CD%\dist\Roco Kingdom Gem Master.exe
 pause
 exit /b 0
 
