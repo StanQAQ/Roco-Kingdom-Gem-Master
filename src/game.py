@@ -80,7 +80,7 @@ class Game:
         if action.kind == "buy":
             effects = detect_specializations(self.state, self.state.current_player)
             messages.extend(
-                f"{player.name} 触发 {effect.attribute.value}系专精阶段{effect.stage}"
+                f"{player.name} 触发 {effect.attribute.value}系专精阶段{('一' if effect.stage == 1 else '二')}"
                 f"{f'（第{effect.occurrence}次）' if effect.occurrence > 1 else ''}"
                 for effect in effects
             )
@@ -93,7 +93,11 @@ class Game:
         acquired_wizards = award_eligible_wizard_cards(player, self.state.wizard_market)
         messages = [f"获得魔法师卡【{wizard.name}】（+{wizard.score}分）" for wizard in acquired_wizards]
         for wizard in acquired_wizards:
-            self.state.wizard_market.remove(wizard)
+            wizard_index = next(
+                index for index, available in enumerate(self.state.wizard_market)
+                if available.card_id == wizard.card_id
+            )
+            self.state.wizard_market.pop(wizard_index)
             if self.state.wizard_deck:
                 self.state.wizard_market.append(self.state.wizard_deck.pop(0))
         market_exhausted = not any(self.state.market.cards[level] for level in (1, 2, 3))

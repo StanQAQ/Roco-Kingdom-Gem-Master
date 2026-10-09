@@ -1,4 +1,4 @@
-"""Qt 6 desktop interface for Magic Gems."""
+"""Qt 6 desktop interface for Roco Kingdom Gem Master."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -18,15 +18,23 @@ from PySide6.QtCore import (
     QSequentialAnimationGroup, QTimer,
 )
 from PySide6.QtGui import (
-    QColor, QFont, QFontDatabase, QFontMetricsF,
+    QBrush, QColor, QFont, QFontDatabase, QFontMetricsF,
     QPainter, QPainterPath, QPalette, QPen, QPixmap, QTextCursor,
 )
+try:
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QSoundEffect
+    QT_MULTIMEDIA_IMPORT_ERROR = None
+except (ImportError, OSError) as error:  # Qt Multimedia can be present but miss a system library.
+    QAudioOutput = QMediaPlayer = None
+    QSoundEffect = None
+    QT_MULTIMEDIA_IMPORT_ERROR = str(error)
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout,
     QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
     QLabel, QMainWindow, QMessageBox, QPushButton, QScrollArea, QTextEdit,
-    QSizePolicy, QStackedWidget, QStyle, QStyleOptionButton, QStylePainter, QVBoxLayout, QWidget,
+    QSizePolicy, QSlider, QStackedWidget, QStyle, QStyleOptionButton, QStylePainter, QVBoxLayout, QWidget,
 )
+from PySide6.QtCore import QUrl
 
 from .ai import choose_action
 from .cards import build_decks, name_for_card_id
@@ -135,7 +143,7 @@ def sage_shard_pixmap(size: int, device_pixel_ratio: float = 1.0) -> QPixmap:
         if _SAGE_SHARD_SOURCE is None:
             image_path = (
                 Path(__file__).resolve().parent.parent
-                / "media" / RESOURCE_SHARD_DIR / "贤者零碎.png"
+                / "media" / RESOURCE_SHARD_DIR / "贤者碎晶.png"
             )
             _SAGE_SHARD_SOURCE = QPixmap(str(image_path))
         source = _SAGE_SHARD_SOURCE
@@ -201,7 +209,7 @@ class CardButton(QPushButton):
         self.top_left = ""
         self.top_right = ""
         self.card_id = ""
-        self.display_card_id = ""
+        self.display_card_name = ""
         self.cost_items: list[tuple[str, int]] = []
         self._impact_tint = QColor(*TRANSPARENT_RGBA)
         self._impact_content_opacity = 1.0
@@ -300,11 +308,10 @@ class CardButton(QPushButton):
                 max(1, self._card_glow_base_radius * self.height() / self.STYLE_REFERENCE_HEIGHT)
             )
 
-    def set_card_content(self, top_left: str, top_right: str, card_id: str, cost_items: list[tuple[str, int]]) -> None:
+    def set_card_content(self, top_left: str, top_right: str, card_name: str, cost_items: list[tuple[str, int]]) -> None:
         self.top_left = top_left
         self.top_right = top_right
-        self.card_id = card_id
-        self.display_card_id = card_id
+        self.display_card_name = card_name
         self.cost_items = cost_items
         self.update()
 
@@ -410,7 +417,7 @@ class CardButton(QPushButton):
                 Qt.AlignmentFlag.AlignRight, heavy=True,
             )
         draw(
-            self.display_card_id, rect.left(), rect.top() + round(self.CARD_ID_Y * scale),
+            self.display_card_name, rect.left(), rect.top() + round(self.CARD_ID_Y * scale),
             rect.width(), round(21 * scale), 10, True, Qt.AlignmentFlag.AlignHCenter,
         )
 
@@ -541,17 +548,18 @@ class AgedParchmentFrame(QFrame):
         painter.setPen(QPen(QColor(PANEL_BORDER_COLOR), 2))
         painter.drawRect(area)
 
-        # Deterministic, very faint flecks give the panels a printed finish.
-        painter.setPen(Qt.PenStyle.NoPen)
+        # Batch flecks by opacity so the paint loop does not repeatedly swap
+        # temporary QColor brushes through the PySide binding.
+        flecks: dict[int, QPainterPath] = {}
         for index in range(160):
             x = (index * 73 + 29) % max(1, self.width())
             y = (index * 47 + 13) % max(1, self.height())
-            shade = QColor(
-                *PARCHMENT_FLECK_RGB,
-                PARCHMENT_FLECK_ALPHA_BASE + index % PARCHMENT_FLECK_ALPHA_VARIATION,
-            )
-            painter.setBrush(shade)
-            painter.drawEllipse(x, y, 1 + index % 2, 1 + (index // 3) % 2)
+            alpha = PARCHMENT_FLECK_ALPHA_BASE + index % PARCHMENT_FLECK_ALPHA_VARIATION
+            path = flecks.setdefault(alpha, QPainterPath())
+            path.addEllipse(x, y, 1 + index % 2, 1 + (index // 3) % 2)
+        for alpha, path in flecks.items():
+            brush = QBrush(QColor(*PARCHMENT_FLECK_RGB, alpha))
+            painter.fillPath(path, brush)
 
 
 class BaroqueTitlePage(QWidget):
@@ -599,7 +607,7 @@ class BaroqueTitlePage(QWidget):
 
 
 class SoundEffects:
-    """Play the same bundled WAV assets through each platform's audio backend."""
+    """Keep WAV assets loaded for low-latency, overlapping playback."""
 
     def __init__(self) -> None:
         audio_dir = runtime_resource_root() / "media" / "audio"
@@ -609,8 +617,37 @@ class SoundEffects:
             "reserve": audio_dir / "reserve_card.wav",
             "click": audio_dir / "click.wav",
         }
+        self._volume = 0.8
+        self._effects: dict[str, object] = {}
+        self._pending: dict[str, int] = {name: 0 for name in self._sound_paths}
+        if QSoundEffect is not None:
+            for name, sound_path in self._sound_paths.items():
+                if not sound_path.is_file():
+                    logging.getLogger(__name__).error("Sound asset not found: %s", sound_path)
+                    continue
+                effect = QSoundEffect()
+                effect.setSource(QUrl.fromLocalFile(str(sound_path)))
+                effect.setVolume(self._volume)
+                effect.statusChanged.connect(lambda n=name, e=effect: self._play_pending(n, e))
+                self._effects[name] = effect
         self._player = self._find_player()
         self._windows_playback_lock = threading.Lock()
+        if QSoundEffect is None and self._player is None and sys.platform != "win32":
+            logging.getLogger(__name__).warning(
+                "Qt Multimedia is unavailable (%s); install libpulse0 on Debian/Ubuntu or a WAV player (pw-play, paplay, aplay); system beeps are used for now",
+                QT_MULTIMEDIA_IMPORT_ERROR or "module unavailable",
+            )
+
+    def set_volume(self, volume: float) -> None:
+        self._volume = max(0.0, min(1.0, float(volume)))
+        for effect in self._effects.values():
+            effect.setVolume(self._volume)
+
+    def _play_pending(self, name: str, effect) -> None:
+        if effect.isLoaded() and self._pending[name]:
+            queued, self._pending[name] = self._pending[name], 0
+            for _ in range(queued):
+                effect.play()
 
     @staticmethod
     def _find_player() -> list[str] | None:
@@ -644,6 +681,13 @@ class SoundEffects:
 
     def play(self, sound: str) -> None:
         sound_path = self._sound_paths.get(sound, self._sound_paths["click"])
+        effect = self._effects.get(sound)
+        if effect is not None:
+            if effect.isLoaded():
+                effect.play()
+            else:
+                self._pending[sound] += 1
+            return
         if not sound_path.is_file():
             logging.getLogger(__name__).error("Sound asset not found: %s", sound_path)
             QApplication.beep()
@@ -681,7 +725,7 @@ class SoundEffects:
 class BackgroundMusic:
     """在对局期间循环播放随游戏打包的背景音乐。"""
 
-    VOLUME = 0.8  # 背景音乐播放音量为播放器基准音量的 80%。
+    VOLUME = 0.8
 
     def __init__(self) -> None:
         self._music_path = runtime_resource_root() / "media" / "audio" / "魔法之匙.mp3"
@@ -690,6 +734,23 @@ class BackgroundMusic:
         self._process: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._mci_alias = f"roco_bgm_{id(self):x}"
+        self._volume = self.VOLUME
+        self._qt_output = None
+        self._qt_player = None
+        if QMediaPlayer is not None and QAudioOutput is not None:
+            self._qt_output = QAudioOutput()
+            self._qt_output.setVolume(self._volume)
+            self._qt_player = QMediaPlayer()
+            self._qt_player.setAudioOutput(self._qt_output)
+            self._qt_player.setSource(QUrl.fromLocalFile(str(self._music_path)))
+            self._qt_player.setLoops(QMediaPlayer.Loops.Infinite)
+
+    def set_volume(self, volume: float) -> None:
+        self._volume = max(0.0, min(1.0, float(volume)))
+        if self._qt_output is not None:
+            self._qt_output.setVolume(self._volume)
+        elif sys.platform == "win32" and self._thread is not None and self._thread.is_alive():
+            self._mci_send(f"setaudio {self._mci_alias} volume to {round(self._volume * 1000)}")
 
     @staticmethod
     def _mci_send(command: str) -> int:
@@ -721,7 +782,7 @@ class BackgroundMusic:
                 )
                 return
             opened = True
-            self._mci_send(f"setaudio {alias} volume to {round(self.VOLUME * 1000)}")
+            self._mci_send(f"setaudio {alias} volume to {round(self._volume * 1000)}")
             result = self._mci_send(f"play {alias} repeat")
             if result:
                 logging.getLogger(__name__).warning(
@@ -787,6 +848,11 @@ class BackgroundMusic:
         if app is not None and app.platformName().casefold() == "offscreen":
             return
 
+        if self._qt_player is not None:
+            self._stop_event.clear()
+            self._qt_player.play()
+            return
+
         self._stop_event.clear()
         if sys.platform == "win32":
             target = self._play_windows
@@ -795,21 +861,22 @@ class BackgroundMusic:
             command: list[str] | None = None
             restart_when_finished = False
             if sys.platform == "darwin" and Path("/usr/bin/afplay").exists():
-                command = ["/usr/bin/afplay", "-v", str(self.VOLUME), str(self._music_path)]
+                command = ["/usr/bin/afplay", "-v", str(self._volume), str(self._music_path)]
                 restart_when_finished = True
             else:
                 mpv = shutil.which("mpv")
                 ffplay = shutil.which("ffplay")
                 vlc = shutil.which("cvlc")
                 if mpv:
-                    command = [mpv, "--no-video", "--loop-file=inf", "--really-quiet", f"--volume={round(self.VOLUME * 100)}", str(self._music_path)]
+                    command = [mpv, "--no-video", "--loop-file=inf", "--really-quiet", f"--volume={round(self._volume * 100)}", str(self._music_path)]
                 elif ffplay:
-                    command = [ffplay, "-nodisp", "-loglevel", "error", "-volume", str(round(self.VOLUME * 100)), "-stream_loop", "-1", "-i", str(self._music_path)]
+                    command = [ffplay, "-nodisp", "-loglevel", "error", "-volume", str(round(self._volume * 100)), "-stream_loop", "-1", "-i", str(self._music_path)]
                 elif vlc:
-                    command = [vlc, "--intf", "dummy", "--loop", f"--gain={self.VOLUME}", str(self._music_path)]
+                    command = [vlc, "--intf", "dummy", "--loop", f"--gain={self._volume}", str(self._music_path)]
             if command is None:
                 logging.getLogger(__name__).warning(
-                    "No MP3-capable background music player is available on this system"
+                    "Background music is unavailable: Qt Multimedia could not load (%s); install libpulse0 on Debian/Ubuntu, or install mpv, ffplay, or VLC",
+                    QT_MULTIMEDIA_IMPORT_ERROR or "module unavailable",
                 )
                 return
             target = self._play_process
@@ -821,6 +888,9 @@ class BackgroundMusic:
     def stop(self) -> None:
         """停止当前背景音乐，允许下次新对局重新播放。"""
         self._stop_event.set()
+        if self._qt_player is not None:
+            self._qt_player.stop()
+            return
         with self._lock:
             process = self._process
         if process is not None and process.poll() is None:
@@ -1073,6 +1143,7 @@ class WizardCardView(CardButton):
         card_width = self.WIDTH if width is None else width
         super().__init__(card_width, parent)
         self.wizard = wizard
+        self.card_id = wizard.card_id
         requirements = [(attribute.value, amount) for attribute, amount in wizard.requirements]
         self.set_card_content("魔法师", f"+{wizard.score}", wizard.name, requirements)
         self.set_card_style(
@@ -1341,6 +1412,7 @@ class PlayerStatusHoverCard(QFrame):
         return tuple(
             (
                 card.card_id,
+                card.display_name,
                 card.level,
                 tuple(attribute.value for attribute in card.attributes),
                 tuple((attribute.value, card.cost.get(attribute, 0)) for attribute in ATTRIBUTES),
@@ -1371,7 +1443,7 @@ class PlayerStatusHoverCard(QFrame):
         self.wizard_label.setText(f"{len(player.wizard_cards)} 张")
         self.status_label.setText(f"当前效果：{status or '暂无'}")
         if not is_self:
-            self.cards_title.setText(f"已获得卡牌　{len(player.purchased)}")
+            self.cards_title.setText(f"已获得卡片　{len(player.purchased)}")
             signature = self.purchased_cards_signature(player)
             if signature == self._purchased_signature and self.width() == self._purchased_layout_width:
                 self.status_label.setVisible(True)
@@ -1466,7 +1538,7 @@ class PlayerStatusHoverCard(QFrame):
             # The hover card grows with its tallest attribute pile. No scroll
             # viewport may clip the lower cards: every purchased card remains
             # visible in this compact, overlapped stack.
-            # 留出更宽裕的默认卡区高度，避免没有卡牌时悬停窗显得过矮。
+            # 留出更宽裕的默认卡区高度，避免没有卡片时悬停窗显得过矮。
             cards_content_height = max(100, tallest_pile + 52)
             self.cards_content.setMinimumHeight(cards_content_height)
             self.cards_content.setMaximumHeight(cards_content_height)
@@ -1640,10 +1712,10 @@ class MagicGemsQtApp(QMainWindow):
         )
 
     def popup_dialog_stylesheet(self, selector: str = "QDialog") -> str:
-        return (
-            f"{selector} {{ background:{PANEL_COLOR}; color:{TEXT_COLOR}; }}"
-            + self.popup_button_stylesheet(f"{selector} QPushButton")
-        )
+        # Keep button styling local. A descendant QPushButton rule also
+        # matches CardButton subclasses inside scroll areas and replaces their
+        # fixed card height with the popup buttons' much shorter minimum.
+        return f"{selector} {{ background:{PANEL_COLOR}; color:{TEXT_COLOR}; }}"
 
     def style_popup_buttons(self, root: QWidget) -> None:
         """Apply shared popup buttons without overriding the designed pet cards."""
@@ -1902,6 +1974,89 @@ class MagicGemsQtApp(QMainWindow):
         self.start_game_log()
         self.refresh()
 
+    def show_settings(self) -> None:
+        dialog = QDialog(self)
+        dialog.setObjectName("settingsDialog")
+        dialog.setWindowTitle("设置")
+        dialog.setFixedSize(390, 260)
+        dialog.setStyleSheet(self.popup_dialog_stylesheet())
+        dialog.setFont(QFont(self.ui_font_family))
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        heading = QLabel("设置")
+        heading.setStyleSheet(f"font-size:18px;font-weight:bold;color:{TEXT_COLOR};background:transparent;border:0;")
+        layout.addWidget(heading)
+        rules_button = QPushButton("规则速查")
+        rules_button.clicked.connect(lambda: (dialog.accept(), self.show_game_rules()))
+        mixer_button = QPushButton("音量合成器")
+        mixer_button.clicked.connect(lambda: (dialog.accept(), self.show_volume_mixer()))
+        title_button = QPushButton("退出到标题")
+        title_button.clicked.connect(lambda: (dialog.accept(), self.confirm_return_to_title()))
+        for button in (rules_button, mixer_button, title_button):
+            button.setMinimumHeight(34)
+            layout.addWidget(button)
+        layout.addStretch(1)
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
+        self.style_popup_buttons(dialog)
+        dialog.exec()
+
+    def show_volume_mixer(self) -> None:
+        dialog = QDialog(self)
+        dialog.setObjectName("volumeMixerDialog")
+        dialog.setWindowTitle("音量合成器")
+        dialog.setFixedSize(470, 235)
+        dialog.setStyleSheet(self.popup_dialog_stylesheet())
+        dialog.setFont(QFont(self.ui_font_family))
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(13)
+
+        title = QLabel("音量合成器")
+        title.setStyleSheet(f"font-size:18px;font-weight:bold;color:{TEXT_COLOR};background:transparent;border:0;")
+        layout.addWidget(title)
+        slider_style = (
+            "QSlider::groove:horizontal { height:14px; background:#f3eee1; border:2px solid #3c3531; border-radius:8px; }"
+            "QSlider::sub-page:horizontal { background:#eec545; border:0; border-radius:6px; }"
+            "QSlider::add-page:horizontal { background:#f3eee1; border-radius:6px; }"
+            "QSlider::handle:horizontal { width:22px; margin:-6px 0; border:2px solid #3c3531; border-radius:11px;"
+            " background:qradialgradient(cx:0.32, cy:0.28, radius:0.9, stop:0 #e5c88d, stop:0.55 #b8874d, stop:1 #79512d); }"
+        )
+
+        for name, initial, setter in (
+            ("背景音乐", round(self.background_music._volume * 100), self.background_music.set_volume),
+            ("音效", round(self.sound_effects._volume * 100), self.sound_effects.set_volume),
+        ):
+            row = QHBoxLayout()
+            label = QLabel(name)
+            label.setFixedWidth(78)
+            label.setStyleSheet("background:transparent;border:0;font-weight:bold;")
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setObjectName("volumeSlider")
+            slider.setRange(0, 100)
+            slider.setValue(initial)
+            slider.setStyleSheet(slider_style)
+            slider.setMinimumHeight(30)
+            amount = QLabel(f"{initial}%")
+            amount.setFixedWidth(44)
+            amount.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            amount.setStyleSheet("background:transparent;border:0;")
+            slider.valueChanged.connect(lambda value, value_label=amount, apply=setter: (value_label.setText(f"{value}%"), apply(value / 100)))
+            row.addWidget(label)
+            row.addWidget(slider, 1)
+            row.addWidget(amount)
+            layout.addLayout(row)
+
+        layout.addStretch(1)
+        close_button = QPushButton("完成")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
+        self.style_popup_buttons(dialog)
+        dialog.exec()
+
     def show_game_rules(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("游戏规则介绍")
@@ -1917,11 +2072,11 @@ class MagicGemsQtApp(QMainWindow):
 
         rules = (
             "每回合选择一项行动：领取资源、购买宠物，或预购一张市场宠物。",
-            "领取资源：拿取三种不同属性各1枚，或同一种属性2枚；第二种方式要求资源池该属性至少剩4枚。",
-            "购买宠物：支付卡牌费用。已购宠物提供永久属性折扣和卡面分数；贤者零碎可替代任意属性。",
-            "预购宠物：从市场保留一张卡并获得1枚贤者零碎；预购区最多3张，之后仍需花费行动购买。",
+            "领取资源：拿取三种不同属性零碎各1枚，或同种属性零碎（≥4）2枚。",
+            "购买宠物：支付零碎或贤者碎晶来购买卡片。已获得的宠物提供永久属性折扣和卡面分数；贤者碎晶可替代任意属性。",
+            "预购宠物：从市场选择一张卡放置到预购区并获得1枚贤者碎晶；预购区最多3张；之后仍需花费行动购买预购的卡片。",
             "属性专精：2张触发第1次阶段一，3张触发第1次阶段二；之后每增加3张重复阶段一、阶段二（5/6张、8/9张……），双属性不计入。",
-            "魔法师卡：公开卡只在玩家行动及待结算专精全部结束后检查；符合条件自动获得，每张加3分。",
+            "魔法师卡：折扣符合条件时，回合结束后自动获得，每张加3分。",
             "胜利：任一玩家达到18分后立即结算；若公共市场全部耗尽，则完成本轮后结算。",
         )
         scroll = QScrollArea()
@@ -1941,7 +2096,7 @@ class MagicGemsQtApp(QMainWindow):
             label = QLabel(text)
             label.setWordWrap(True)
             label.setStyleSheet(
-                f"background:{PANEL_COLOR};color:{TEXT_COLOR};border:1px solid {PANEL_BORDER_COLOR};padding:8px;font-size:12px;"
+                f"background:{PANEL_COLOR};color:{TEXT_COLOR};border:1px solid {PANEL_BORDER_COLOR};padding:8px;font-size:14px;"
             )
             content_layout.addWidget(label)
         content_layout.addStretch(1)
@@ -1967,9 +2122,9 @@ class MagicGemsQtApp(QMainWindow):
         rules = (
             (
                 Attribute.WATER,
-                "泡沫幻影",
+                "润泽",
                 "选择公共市场中的一张宠物卡，将其当前最高的一项资源费用 -1；若有多项并列最高，随机降低其中一项。市场没有宠物时效果失效。",
-                "免费捕捉",
+                "泡沫幻影",
                 "下一次购买宠物不需要支付任何资源。效果在完成下一次购买后消耗。",
             ),
             (
@@ -1984,7 +2139,7 @@ class MagicGemsQtApp(QMainWindow):
                 "根吸收",
                 "选择公共市场中的一张宠物卡，使该卡分数 +1。之后购买这张卡时会保留增加的分数；市场没有宠物时效果失效。",
                 "汲取",
-                "获得临时贤者零碎，数量为其他玩家所拥有的单属性草系宠物总数 +1。临时零碎用于购买后消耗，不会退回公共贤者零碎池。",
+                "获得临时贤者碎晶，数量为其他玩家所拥有的单属性草系宠物总数 +1。临时零碎用于购买后消耗，不会退回公共贤者碎晶池。",
             ),
             (
                 Attribute.CUTE,
@@ -1998,7 +2153,7 @@ class MagicGemsQtApp(QMainWindow):
                 "吞噬",
                 "选择一名持有水、火、草、萌或恶系普通灵碎的其他玩家，随机夺取其一种普通灵碎 1 枚。若自己已达到资源上限，或没有可选目标，则无法发动；受撒娇免疫时攻击无效并消耗免疫。",
                 "恶魔契约",
-                "选择一名持有已购宠物的其他玩家，随机夺取其一张宠物并加入自己的已购区，卡牌分数从对方转给自己；困难 AI 优先选择未处于攻击免疫的最高分合格对手，若所有合格对手都免疫则选择最高分者（攻击会被免疫）。受撒娇免疫时攻击无效并消耗免疫。",
+                "选择一名持有已购宠物的其他玩家，随机夺取其一张宠物并加入自己的已购区，卡片分数从对方转给自己；困难 AI 优先选择未处于攻击免疫的最高分合格对手，若所有合格对手都免疫则选择最高分者（攻击会被免疫）。受撒娇免疫时攻击无效并消耗免疫。",
             ),
         )
 
@@ -2027,7 +2182,7 @@ class MagicGemsQtApp(QMainWindow):
         )
         intro.setWordWrap(True)
         intro.setStyleSheet(
-            f"background:{PANEL_COLOR};color:{TEXT_COLOR};border:1px solid {PANEL_BORDER_COLOR};padding:6px;font-size:11px;"
+            f"background:{PANEL_COLOR};color:{TEXT_COLOR};border:1px solid {PANEL_BORDER_COLOR};padding:6px;font-size:13px;"
         )
         outer.addWidget(intro)
 
@@ -2058,7 +2213,7 @@ class MagicGemsQtApp(QMainWindow):
                 )
                 detail.setWordWrap(True)
                 detail.setTextFormat(Qt.TextFormat.RichText)
-                detail.setStyleSheet("font-size:11px;background:transparent;border:0;")
+                detail.setStyleSheet("font-size:13px;background:transparent;border:0;")
                 panel_layout.addWidget(detail)
             content_layout.addWidget(panel)
 
@@ -2114,16 +2269,16 @@ class MagicGemsQtApp(QMainWindow):
             "border-radius:4px; padding:2px 8px; font-size:11px; font-weight:bold;"
         )
         header_layout.addWidget(self.mode_label)
-        self.restart_button = QPushButton("返回标题")
-        self.restart_button.setFixedSize(92, 30)
+        self.settings_button = QPushButton("设置")
+        self.settings_button.setFixedSize(92, 30)
         # 顶栏按钮高度固定，清除弹窗按钮样式的纵向内边距，避免样式表撑高按钮。
-        self.restart_button.setStyleSheet(
+        self.settings_button.setStyleSheet(
             self.popup_button_stylesheet().replace("padding:6px 14px; ", "padding:0 14px; ").replace(
                 "min-height:26px;", "min-height:0;"
             )
         )
-        self.restart_button.clicked.connect(self.confirm_return_to_title)
-        header_layout.addWidget(self.restart_button)
+        self.settings_button.clicked.connect(self.show_settings)
+        header_layout.addWidget(self.settings_button)
         outer.addWidget(header)
 
         body = QHBoxLayout()
@@ -2151,7 +2306,7 @@ class MagicGemsQtApp(QMainWindow):
         lower_row.setSpacing(6)
         self.players_frame, self.players_layout = self.section("玩家状态")
         self.log_frame, self.log_layout = self.section("行动记录")
-        self.reserved_frame, self.reserved_layout = self.section("预购卡牌")
+        self.reserved_frame, self.reserved_layout = self.section("预购卡片")
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setUndoRedoEnabled(False)
@@ -2188,7 +2343,7 @@ class MagicGemsQtApp(QMainWindow):
         self.purchasing_power_layout.setSpacing(1)
         self.pool_resource_frame, self.pool_resource_layout = self.section("已有资源")
         self.pool_resource_title = self.pool_resource_layout.itemAt(0).widget()
-        self.purchased_frame, self.purchased_layout = self.section("已获得卡牌")
+        self.purchased_frame, self.purchased_layout = self.section("已获得卡片")
         self.purchasing_power_frame.setFixedHeight(70)
         self.pool_resource_frame.setFixedHeight(108)
         summary_layout.addWidget(self.purchasing_power_frame)
@@ -2278,7 +2433,7 @@ class MagicGemsQtApp(QMainWindow):
                 if card.card_id not in self.deferred_market_card_ids
             }
             slot_widgets: list[QWidget] = []
-            for slot in range(max(5, len(state.market.cards[level]))):
+            for slot in range(max(5, len(state.market.cards[level]), max(cards_by_slot, default=-1) + 1)):
                 card = cards_by_slot.get(slot)
                 if card is None:
                     placeholder = QWidget()
@@ -2311,7 +2466,7 @@ class MagicGemsQtApp(QMainWindow):
             released_slots = [slot for card_id, slot in previous.items() if card_id not in card_ids]
             current = {card_id: slot for card_id, slot in previous.items() if card_id in card_ids}
             occupied = set(current.values())
-            slot_count = max(5, len(cards))
+            slot_count = max(5, len(cards), max(current.values(), default=-1) + 1)
             free_slots = released_slots + [slot for slot in range(slot_count) if slot not in occupied and slot not in released_slots]
             for card in cards:
                 if card.card_id in current:
@@ -2334,11 +2489,12 @@ class MagicGemsQtApp(QMainWindow):
         cost_items = [(attribute.value, card.cost[attribute]) for attribute in ATTRIBUTES if card.cost.get(attribute)]
         shown_name = (
             f"▶ {card.display_name}{transformed}"
-            if card is self.selected_card else f"{card.display_name}{transformed}"
+            if self.selected_card is not None and card.card_id == self.selected_card.card_id else f"{card.display_name}{transformed}"
         )
         button.set_card_content(attributes, str(card.effective_score), shown_name, cost_items)
         button.card_id = card.card_id
-        background = CARD_SELECTED_COLOR if card is self.selected_card else CARD_AFFORDABLE_COLOR if can_afford else CARD_FACE_COLOR
+        selected = self.selected_card is not None and card.card_id == self.selected_card.card_id
+        background = CARD_SELECTED_COLOR if selected else CARD_AFFORDABLE_COLOR if can_afford else CARD_FACE_COLOR
         border_color = specialization_glow_color(card) or CARD_BORDER_COLOR
         text_color = TEXT_COLOR
         button.set_card_style(
@@ -2498,7 +2654,7 @@ class MagicGemsQtApp(QMainWindow):
         wizard_card_width = 44
         wizard_scroll.setFixedHeight(80)
         wizard_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        wizard_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        wizard_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         wizard_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         wizard_scroll.viewport().setStyleSheet(
             f"background:{RESERVED_AREA_BACKGROUND};"
@@ -2608,7 +2764,7 @@ class MagicGemsQtApp(QMainWindow):
             pile_scroll.setWidgetResizable(True)
             pile_scroll.setFrameShape(QFrame.Shape.NoFrame)
             pile_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            pile_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            pile_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             pile_scroll.setWidget(pile_content)
             self.purchased_column_scrolls[attribute] = pile_scroll
             column_layout.addWidget(pile_scroll, 1)
@@ -2633,7 +2789,7 @@ class MagicGemsQtApp(QMainWindow):
             if target in card.attributes:
                 player = self.game.state.players[0]
                 for index, (owned_card, _chosen) in enumerate(player.purchased):
-                    if owned_card is card:
+                    if owned_card.card_id == card.card_id:
                         player.purchased[index] = (owned_card, target)
                         self.dual_move_sequence += 1
                         self.dual_move_order[card.card_id] = self.dual_move_sequence
@@ -2690,7 +2846,7 @@ class MagicGemsQtApp(QMainWindow):
                 public_row.addWidget(button)
                 self.resource_buttons[attribute] = button
             self.light_count_label = LightResourceLabel()
-            self.light_count_label.setToolTip("公共贤者零碎剩余数量；预购公共市场卡牌时获得。")
+            self.light_count_label.setToolTip("公共贤者碎晶剩余数量；预购公共市场卡片时获得。")
             public_row.addWidget(self.light_count_label)
             self.controls_layout.addLayout(public_row)
 
@@ -2788,7 +2944,7 @@ class MagicGemsQtApp(QMainWindow):
             # 保持单行，并按完整文字的自然宽度分配空间，不让效果说明换行或被裁切。
             effect_label.setMinimumWidth(0)
             effect_label.setMinimumWidth(effect_label.sizeHint().width())
-            frame.adjustSize()
+            frame.updateGeometry()
 
         expected_indexes = set(range(len(state.players)))
         if (
@@ -2855,14 +3011,12 @@ class MagicGemsQtApp(QMainWindow):
             return super().eventFilter(watched, event)
 
         if isinstance(watched, QWidget) and watched.property("playerStatusIndex") is not None:
+            player_index = int(watched.property("playerStatusIndex"))
+            if self.player_status_labels.get(player_index) is not watched:
+                return super().eventFilter(watched, event)
             if event_type == QEvent.Type.Enter:
                 self.player_hover_hide_timer.stop()
-                self.show_player_status_hover(
-                    self.player_status_labels.get(
-                        int(watched.property("playerStatusIndex")), watched
-                    ),
-                    int(watched.property("playerStatusIndex")),
-                )
+                self.show_player_status_hover(watched, player_index)
             elif event_type == QEvent.Type.Leave:
                 self.player_hover_hide_timer.start()
         return super().eventFilter(watched, event)
@@ -2883,7 +3037,13 @@ class MagicGemsQtApp(QMainWindow):
             return
         player = self.game.state.players[player_index]
         available = self.rect().adjusted(4, 4, -4, -4)
-        hover_width = max(1, anchor.width())
+        panel_margins = self.players_layout.contentsMargins()
+        hover_width = max(
+            1,
+            self.players_frame.contentsRect().width()
+            - panel_margins.left()
+            - panel_margins.right(),
+        )
         self.player_hover_card.setMaximumWidth(hover_width)
         self.player_hover_card.setFixedWidth(hover_width)
         self.player_hover_card.setMaximumHeight(max(1, available.height()))
@@ -2917,15 +3077,19 @@ class MagicGemsQtApp(QMainWindow):
             self.player_hover_card.layout().activate()
         anchor_top_left = anchor.mapTo(self, QPoint(0, 0))
         popup_size = self.player_hover_card.size()
-        x = anchor_top_left.x()
-        # Pin the detail card to the status row's left edge and let it open
-        # upward from the row, so it never follows the cursor or jumps between
-        # the row frame and its text label.
-        y = anchor_top_left.y() + anchor.height() - popup_size.height()
-        if y < available.top():
-            below_y = anchor_top_left.y()
-            if below_y + popup_size.height() - 1 <= available.bottom():
-                y = below_y
+        players_left = self.players_frame.mapTo(self, QPoint(0, 0)).x()
+        players_right = players_left + self.players_frame.width()
+        right_x = players_right + 8
+        left_x = players_left - popup_size.width() - 8
+        # Keep the player rows uncovered so moving between them updates the
+        # detail card for the row actually under the cursor.
+        if right_x + popup_size.width() - 1 <= available.right():
+            x = right_x
+        elif left_x >= available.left():
+            x = left_x
+        else:
+            x = anchor_top_left.x()
+        y = anchor_top_left.y()
         x = min(max(x, available.left()), available.right() - popup_size.width() + 1)
         y = min(max(y, available.top()), available.bottom() - popup_size.height() + 1)
         self.player_hover_card.setGeometry(x, y, popup_size.width(), popup_size.height())
@@ -3007,7 +3171,7 @@ class MagicGemsQtApp(QMainWindow):
     def select_card(self, card: PetCard) -> None:
         if self.interaction_locked or self.resource_selection or self.game.state.current_player != 0 or self.game.state.finished or self.game.state.pending_specializations or self.ai_battle:
             return
-        if self.selected_card is card:
+        if self.selected_card is not None and self.selected_card.card_id == card.card_id:
             self.selected_card = None
         else:
             # Selecting another market/reserved card switches the pending
@@ -3153,13 +3317,13 @@ class MagicGemsQtApp(QMainWindow):
         dialog.setStyleSheet(self.popup_dialog_stylesheet())
         dialog.setFont(QFont(self.ui_font_family))
         if cards:
-            dialog.resize(650, 580)
+            dialog.resize(800, 700)
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(7)
         layout.addWidget(QLabel(specialization_name(effect)))
         if cards:
-            intro = QLabel("选择目标卡牌；卡面下方显示本次专精将造成的变化，悬停可查看详细结果。")
+            intro = QLabel("选择目标卡片；卡面下方显示本次专精将造成的变化。")
             intro.setWordWrap(True)
             intro.setStyleSheet(f"background:transparent;border:0;color:{TEXT_COLOR};font-size:11px;")
             layout.addWidget(intro)
@@ -3177,39 +3341,34 @@ class MagicGemsQtApp(QMainWindow):
             market_layout.setSpacing(8)
             for level in (3, 2, 1):
                 level_cards = [card for card in cards if card.level == level]
-                cards_by_slot = {
-                    self.market_slots[level].get(card.card_id, slot): card
-                    for slot, card in enumerate(self.game.state.market.cards[level])
-                    if card in level_cards
-                }
-                slot_count = max(5, len(self.game.state.market.cards[level]))
+                level_card_ids = {card.card_id for card in level_cards}
+                cards_by_slot = sorted(
+                    [
+                        (self.market_slots[level].get(card.card_id, slot), card)
+                        for slot, card in enumerate(self.game.state.market.cards[level])
+                        if card.card_id in level_card_ids
+                    ],
+                    key=lambda item: item[0],
+                )
                 row = QHBoxLayout()
                 row.setSpacing(5)
                 row.setAlignment(Qt.AlignmentFlag.AlignLeft)
                 label = QLabel(f"{level}级市场")
-                label.setFixedWidth(82)
+                label.setFixedWidth(88)
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                label.setStyleSheet("font-size:14px;font-weight:bold;background:transparent;border:0;")
+                label.setStyleSheet("font-size:16px;font-weight:bold;background:transparent;border:0;")
                 row.addWidget(label)
 
                 preview_row = QHBoxLayout()
                 preview_row.setSpacing(5)
                 preview_label = QLabel("")
-                preview_label.setFixedWidth(82)
+                preview_label.setFixedWidth(88)
                 preview_row.addWidget(preview_label)
-                for slot in range(slot_count):
-                    card = cards_by_slot.get(slot)
-                    if card is None:
-                        placeholder = QWidget()
-                        placeholder.setFixedSize(self.CARD_WIDTH, round(self.CARD_WIDTH * 4 / 3))
-                        placeholder.setStyleSheet("background:transparent;border:0;")
-                        row.addWidget(placeholder)
-                        preview_placeholder = QWidget()
-                        preview_placeholder.setFixedSize(self.CARD_WIDTH, 38)
-                        preview_placeholder.setStyleSheet("background:transparent;border:0;")
-                        preview_row.addWidget(preview_placeholder)
-                        continue
-                    button = CardButton(self.CARD_WIDTH)
+                for _slot, card in cards_by_slot:
+                    # Settlement targets need to remain readable regardless
+                    # of the main market's compact card size or empty slots.
+                    settlement_card_width = 96
+                    button = CardButton(settlement_card_width)
                     # Specialization settlement is about choosing an effect
                     # target, not buying; don't mark cards green based on the
                     # human player's current purchasing power.
@@ -3223,13 +3382,13 @@ class MagicGemsQtApp(QMainWindow):
 
                     preview = self.specialization_card_preview(effect, card)
                     preview_label = QLabel(preview)
-                    preview_label.setFixedWidth(self.CARD_WIDTH)
-                    preview_label.setMinimumHeight(38)
+                    preview_label.setFixedWidth(settlement_card_width)
+                    preview_label.setMinimumHeight(48)
                     preview_label.setWordWrap(True)
                     preview_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
                     accent = self.RESOURCE_COLORS[effect.attribute][1]
                     preview_label.setStyleSheet(
-                        f"color:{accent};background:transparent;border:0;font-size:10px;font-weight:bold;"
+                        f"color:{accent};background:transparent;border:0;font-size:12px;font-weight:bold;"
                     )
                     preview_row.addWidget(preview_label)
                 row.addStretch(1)
@@ -3314,6 +3473,7 @@ class MagicGemsQtApp(QMainWindow):
         message: str,
     ) -> str:
         attribute, stage = effect.attribute, effect.stage
+        stage_name = "一" if stage == 1 else "二"
         effect_name = STAGE_NAMES[(attribute, stage)]
         repeat = f"（第{effect.occurrence}次）" if effect.occurrence > 1 else ""
         result = message.partition("：")[2] or message
@@ -3328,14 +3488,14 @@ class MagicGemsQtApp(QMainWindow):
                 outcome = f"{blocked.group(1)}触发撒娇，免疫了来自{blocked.group(2)}的引燃攻击！"
             else:
                 # Keep legacy messages readable while old saved logs/tests exist.
-                reserved = re.search(r"(?:引燃|点燃)了(.+?)预购的(.+?)，归还至(\d+)级牌库；(.+?)保留预购获得的贤者(?:零碎|碎晶)", result)
+                reserved = re.search(r"(?:引燃|点燃)了(.+?)预购的(.+?)，归还至(\d+)级牌库；(.+?)保留预购获得的贤者碎晶", result)
                 purchased = re.search(r"(?:引燃|点燃)了(.+?)最低等级的(.+?)，该卡移出对局，(.+?)失去(\d+)分", result)
                 if reserved:
                     outcome = f"选中了{reserved.group(1)}；引燃其预购卡{reserved.group(2)}并归还至{reserved.group(3)}级牌库，预购贤者碎晶保留！"
                 elif purchased:
                     outcome = f"选中了{purchased.group(1)}；没有预购卡，引燃其最低等级的{purchased.group(2)}并移出对局，失去{purchased.group(4)}分！"
                 else:
-                    outcome = "没有可引燃的对手卡牌，效果未生效！"
+                    outcome = "没有可引燃的对手卡片，效果未生效！"
         elif "没有" in result and "效果失效" in result:
             outcome = "没有符合条件的目标，效果未生效！"
         elif attribute == Attribute.WATER and stage == 1:
@@ -3349,15 +3509,15 @@ class MagicGemsQtApp(QMainWindow):
             match = re.search(r"([^ ]+) 的分数 \+1", result)
             outcome = f"{match.group(1)}的分数提高了1分！" if match else "目标宠物的分数提高了1分！"
         elif attribute == Attribute.GRASS and stage == 2:
-            match = re.search(r"获得\s*(\d+)\s*枚临时贤者零碎", result)
-            outcome = f"{player_name}获得了{match.group(1)}枚临时贤者零碎！" if match else f"{player_name}获得了临时贤者零碎！"
+            match = re.search(r"获得\s*(\d+)\s*枚临时贤者碎晶", result)
+            outcome = f"{player_name}获得了{match.group(1)}枚临时贤者碎晶！" if match else f"{player_name}获得了临时贤者碎晶！"
         elif attribute == Attribute.CUTE and stage == 1:
             outcome = f"{player_name}获得一次攻击免疫，下次遭受其他玩家攻击时免疫该次攻击！"
         elif attribute == Attribute.CUTE and stage == 2:
             details = result.strip()
             if "：" in details:
                 details = details.partition("：")[2]
-            outcome = f"除{player_name}外，其他玩家各有一张最高级宠物的分数变为0（{details}）！" if "其他玩家没有已购宠物" not in details else "其他玩家没有已购宠物，效果未生效！"
+            outcome = f"除{player_name}外，其他玩家受到最高级宠物分数归零效果（{details}）！" if "其他玩家没有可影响的已购宠物" not in details else "其他玩家没有可影响的已购宠物，效果未生效！"
         elif attribute == Attribute.DARK and stage == 1:
             blocked = re.search(r"(.+?)触发撒娇，免疫了来自(.+?)的攻击", result)
             match = re.search(r"(.+?) 从 (.+?) 偷取 1 枚(.+?)系灵碎", result)
@@ -3375,7 +3535,7 @@ class MagicGemsQtApp(QMainWindow):
         else:
             outcome = f"{result.rstrip('。！')}！"
 
-        return f"【{effect_name}{repeat}】玩家{player_name}触发了{attribute.value}系专精阶段{stage}{repeat}，{outcome}"
+        return f"【{effect_name}{repeat}】玩家{player_name}触发了{attribute.value}系专精阶段{stage_name}{repeat}，{outcome}"
 
     def widget_rect_in_window(self, widget: QWidget | None) -> QRect:
         if widget is None or not widget.isVisible():
@@ -3490,6 +3650,42 @@ class MagicGemsQtApp(QMainWindow):
         state = self.game.state
         after_locations, after_cards = self.state_card_locations(state)
         events: list[dict] = []
+        resource_steal = None
+        if (
+            specialization_effect
+            and specialization_effect.attribute == Attribute.DARK
+            and specialization_effect.stage == 1
+            and messages
+        ):
+            steal_match = re.search(
+                r"(.+?) 从 (.+?) 偷取 1 枚(.+?)系灵碎",
+                messages[0].partition("：")[2] or messages[0],
+            )
+            if steal_match:
+                attacker_name, victim_name, attribute_name = steal_match.groups()
+                attribute = next(
+                    (item for item in ATTRIBUTES if item.value == attribute_name),
+                    None,
+                )
+                attacker_index = next(
+                    (index for index, player in enumerate(state.players) if player.name == attacker_name),
+                    None,
+                )
+                victim_index = next(
+                    (index for index, player in enumerate(state.players) if player.name == victim_name),
+                    None,
+                )
+                if attribute is not None and attacker_index is not None and victim_index is not None:
+                    resource_steal = {
+                        "kind": "resource-steal",
+                        "player_index": attacker_index,
+                        "source_player_index": victim_index,
+                        "attribute": attribute,
+                        "text": f"{attribute.value}+1",
+                        "color": self.RESOURCE_COLORS[attribute][1],
+                        "start": before["player_origins"].get(victim_index, QRect()),
+                        "target": before["player_origins"].get(attacker_index, QRect()),
+                    }
 
         for player_index, player in enumerate(state.players):
             previous = before["resources"][player_index]
@@ -3510,7 +3706,13 @@ class MagicGemsQtApp(QMainWindow):
             if light_delta:
                 sign = "+" if light_delta > 0 else "−"
                 changes.append(f"贤者{sign}{abs(light_delta)}")
-            if changes:
+            if changes and not (
+                resource_steal
+                and player_index in (
+                    resource_steal["player_index"],
+                    resource_steal["source_player_index"],
+                )
+            ):
                 events.append({
                     "kind": "resource-status",
                     "player_index": player_index,
@@ -3519,20 +3721,23 @@ class MagicGemsQtApp(QMainWindow):
                     "start": before["player_origins"].get(player_index, QRect()),
                 })
 
+        if resource_steal is not None:
+            events.append(resource_steal)
+
         burned_id = None
         burned_owner = None
         if specialization_effect and specialization_effect.attribute == Attribute.FIRE and specialization_effect.stage == 1:
-            result = (messages[0].partition("：")[2] or messages[0]) if messages else ""
-            match = re.search(
-                r"选中玩家【([^】]+)】：(?:没有预购卡，)?(?:引燃|烧掉|点燃)其(?:预购卡|最低等级卡)【([^】]+)】",
-                result,
-            )
-            if not match:
-                match = re.search(r"(?:引燃|烧掉|点燃)了(.+?)预购的([^，]+)", result)
-            if not match:
-                match = re.search(r"(?:引燃|烧掉|点燃)了(.+?)最低等级的([^，]+)", result)
-            if match:
-                burned_owner, burned_id = match.group(1), match.group(2)
+            changed_card_ids = [
+                card_id
+                for card_id, old_location in before["locations"].items()
+                if old_location[0] != specialization_effect.player_index
+                and old_location[1] in ("reserved", "purchased")
+                and after_locations.get(card_id) != old_location
+            ]
+            if len(changed_card_ids) == 1:
+                burned_id = changed_card_ids[0]
+                owner_index = before["locations"][burned_id][0]
+                burned_owner = state.players[owner_index].name
 
         all_card_ids = set(before["locations"]) | set(after_locations)
         for card_id in sorted(all_card_ids):
@@ -3545,10 +3750,7 @@ class MagicGemsQtApp(QMainWindow):
                 continue
 
             if card_id == burned_id:
-                owner_index = next(
-                    (index for index, player in enumerate(state.players) if player.name == burned_owner),
-                    old_location[0] if old_location else None,
-                )
+                owner_index = old_location[0] if old_location else None
                 source = before["card_origins"].get(card_id)
                 if owner_index not in (None, 0):
                     source = before["player_origins"].get(owner_index) or source
@@ -3716,9 +3918,9 @@ class MagicGemsQtApp(QMainWindow):
         self.interaction_locked = locked
         for marker in getattr(self, "selection_markers", []):
             marker.setEnabled(not locked)
-        restart_button = getattr(self, "restart_button", None)
-        if restart_button is not None:
-            restart_button.setEnabled(not locked)
+        settings_button = getattr(self, "settings_button", None)
+        if settings_button is not None:
+            settings_button.setEnabled(not locked)
         for button in self.findChildren(QPushButton, "specializationHelpButton"):
             button.setEnabled(not locked)
         for card in self.findChildren(DraggableDualCard):
@@ -3758,6 +3960,7 @@ class MagicGemsQtApp(QMainWindow):
             card.display_name,
             [(attribute.value, card.cost[attribute]) for attribute in ATTRIBUTES if card.cost.get(attribute)],
         )
+        card_overlay.card_id = card.card_id
         card_overlay.setMinimumSize(1, 1)
         card_overlay.setMaximumSize(1000, 1000)
         card_overlay.set_card_style(
@@ -3890,7 +4093,8 @@ class MagicGemsQtApp(QMainWindow):
     def clear_impact_card_content(overlay: CardButton) -> None:
         overlay.top_left = ""
         overlay.top_right = ""
-        overlay.display_card_id = ""
+        overlay.card_id = ""
+        overlay.display_card_name = ""
         overlay.cost_items = []
         overlay.update()
 
@@ -3920,10 +4124,12 @@ class MagicGemsQtApp(QMainWindow):
             )
             if attribute is not None:
                 resource_name = attribute.value
-                pixmap = resource_shard_pixmap(attribute, 16, self.devicePixelRatioF())
+                icon_size = 24 if event.get("kind") == "resource-steal" else 16
+                pixmap = resource_shard_pixmap(attribute, icon_size, self.devicePixelRatioF())
                 color = self.RESOURCE_COLORS[attribute][1]
             else:
                 resource_name = "贤者"
+                icon_size = 16
                 pixmap = sage_shard_pixmap(16, self.devicePixelRatioF())
                 color = SAGE_ACCENT_COLOR
 
@@ -3933,20 +4139,63 @@ class MagicGemsQtApp(QMainWindow):
             token_row.setContentsMargins(0, 0, 0, 0)
             token_row.setSpacing(2)
             icon = QLabel(token)
-            icon.setFixedSize(16, 16)
+            icon.setFixedSize(icon_size, icon_size)
             icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
             icon.setStyleSheet("background:transparent;border:0;padding:0;")
             if not pixmap.isNull():
                 icon.setPixmap(pixmap)
             delta = QLabel(change[len(resource_name):], token)
             delta.setStyleSheet(
-                f"background:transparent;border:0;padding:0;color:{color};font-size:13px;font-weight:bold;"
+                f"background:transparent;border:0;padding:0;color:{color};"
+                f"font-size:{16 if event.get('kind') == 'resource-steal' else 13}px;font-weight:bold;"
             )
             token_row.addWidget(icon)
             token_row.addWidget(delta)
             row.addWidget(token)
         row.addStretch(1)
         return overlay
+
+    def play_resource_steal_animation(self, event: dict) -> None:
+        """Fly the stolen shard from the victim's status row to the attacker."""
+        overlay = self.create_resource_impact_overlay(event)
+        overlay.setFixedSize(96, 40)
+        source = QRect(event.get("start", QRect()))
+        target = QRect(event.get("target", QRect()))
+        center = self.rect().center()
+        if not source.isValid() or source.width() <= 0 or source.height() <= 0:
+            source = QRect(center.x() - 48, center.y() + 70, 96, 40)
+        if not target.isValid() or target.width() <= 0 or target.height() <= 0:
+            target = QRect(center.x() - 48, center.y() - 70, 96, 40)
+        start = QRect(source.center().x() - 48, source.center().y() - 20, 96, 40)
+        end = QRect(target.center().x() - 48, target.center().y() - 20, 96, 40)
+        overlay.setGeometry(start)
+        opacity = QGraphicsOpacityEffect(overlay)
+        opacity.setOpacity(1.0)
+        overlay.setGraphicsEffect(opacity)
+        overlay.show()
+        overlay.raise_()
+        self.keep_turn_banner_on_top()
+        self.impact_animation_running = True
+        self.impact_animation_overlay = overlay
+        self.impact_animation_overlays = [overlay]
+
+        group = QParallelAnimationGroup(self)
+        movement = QPropertyAnimation(overlay, b"geometry", group)
+        movement.setDuration(760)
+        movement.setStartValue(start)
+        movement.setEndValue(end)
+        movement.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        fade = QPropertyAnimation(opacity, b"opacity", group)
+        fade.setDuration(760)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        group.addAnimation(movement)
+        group.addAnimation(fade)
+        group.finished.connect(
+            lambda overlays=self.impact_animation_overlays.copy(): self.finish_impact_animation(overlays)
+        )
+        self.impact_animation = group
+        group.start()
 
     @staticmethod
     def resource_impact_style(event: dict) -> str:
@@ -4001,6 +4250,9 @@ class MagicGemsQtApp(QMainWindow):
             return
 
         event = self.impact_animation_queue.pop(0)
+        if event.get("kind") == "resource-steal":
+            self.play_resource_steal_animation(event)
+            return
         if event.get("kind") == "cute-status-impact":
             simultaneous_events = [event]
             remaining_events = []
@@ -4084,6 +4336,7 @@ class MagicGemsQtApp(QMainWindow):
                 card.display_name,
                 [(attribute.value, card.cost[attribute]) for attribute in ATTRIBUTES if card.cost.get(attribute)],
             )
+            overlay.card_id = card.card_id
             overlay.setMinimumSize(1, 1)
             overlay.setMaximumSize(1000, 1000)
             overlay.set_card_style(
@@ -4387,6 +4640,7 @@ class MagicGemsQtApp(QMainWindow):
                 card.display_name,
                 [(attribute.value, card.cost[attribute]) for attribute in ATTRIBUTES if card.cost.get(attribute)],
             )
+            overlay.card_id = card.card_id
             overlay.set_card_style(
                 background=CARD_FACE_WARM_COLOR,
                 border_color=CARD_BORDER_COLOR,
@@ -4606,12 +4860,12 @@ class MagicGemsQtApp(QMainWindow):
                 for old_card, selected_attribute in zip(previous_duals, action.dual_choices):
                     if selected_attribute in old_card.attributes:
                         for index, (owned, _chosen) in enumerate(actor_player.purchased):
-                            if owned is old_card:
+                            if owned.card_id == old_card.card_id:
                                 actor_player.purchased[index] = (owned, selected_attribute)
                                 break
                 if action.card is not None and action.card.is_dual:
                     for index, (owned, _chosen) in enumerate(actor_player.purchased):
-                        if owned is action.card:
+                        if owned.card_id == action.card.card_id:
                             initial_attribute = action.card.attributes[0]
                             actor_player.purchased[index] = (owned, initial_attribute)
                             break
@@ -4645,7 +4899,11 @@ class MagicGemsQtApp(QMainWindow):
                     )
                 else:
                     self.log(message, color=TEXT_COLOR)
-            acquired_wizards = [wizard for wizard in actor_player.wizard_cards if wizard not in previous_wizards]
+            previous_wizard_ids = {wizard.card_id for wizard in previous_wizards}
+            acquired_wizards = [
+                wizard for wizard in actor_player.wizard_cards
+                if wizard.card_id not in previous_wizard_ids
+            ]
             impact_events = self.build_impact_events(
                 impact_snapshot, action, messages, specialization_effect
             )

@@ -5,8 +5,8 @@ from .rules import RuleError
 
 
 STAGE_NAMES = {
-    (Attribute.WATER, 1): "泡沫幻影",
-    (Attribute.WATER, 2): "免费捕捉",
+    (Attribute.WATER, 1): "润泽",
+    (Attribute.WATER, 2): "泡沫幻影",
     (Attribute.FIRE, 1): "引燃",
     (Attribute.FIRE, 2): "阳火增辉",
     (Attribute.GRASS, 1): "根吸收",
@@ -19,8 +19,9 @@ STAGE_NAMES = {
 
 
 def specialization_name(effect: SpecializationEffect) -> str:
+    stage_name = {1: "一", 2: "二"}.get(effect.stage, str(effect.stage))
     repeat = f"（第{effect.occurrence}次）" if effect.occurrence > 1 else ""
-    return f"{effect.attribute.value}系阶段{effect.stage}·{STAGE_NAMES[(effect.attribute, effect.stage)]}{repeat}"
+    return f"{effect.attribute.value}系阶段{stage_name}·{STAGE_NAMES[(effect.attribute, effect.stage)]}{repeat}"
 
 
 def single_attribute_count(player: Player, attribute: Attribute) -> int:
@@ -101,14 +102,14 @@ def _burn_for_fire_stage_one(state: GameState, player_index: int) -> str:
     target = state.rng.choice(targets)
     if target.reserved or target.purchased:
         blocked = _apply_attack_immunity(
-            state.players[player_index], target, "火系阶段1·引燃"
+            state.players[player_index], target, "火系阶段一·引燃"
         )
         if blocked:
             return blocked.partition("：")[2]
 
     if target.reserved:
         card = state.rng.choice(target.reserved)
-        target.reserved.remove(card)
+        target.reserved = [reserved for reserved in target.reserved if reserved.card_id != card.card_id]
         _return_to_deck(state, card)
         return (
             f"选中玩家【{target.name}】：引燃其预购卡【{card.display_name}】，"
@@ -122,7 +123,11 @@ def _burn_for_fire_stage_one(state: GameState, player_index: int) -> str:
     candidates = [card for card, _ in target.purchased if card.level == lowest_level]
     card = state.rng.choice(candidates)
     old_score = card.effective_score
-    target.purchased = [(owned, chosen) for owned, chosen in target.purchased if owned is not card]
+    target.purchased = [
+        (owned, chosen)
+        for owned, chosen in target.purchased
+        if owned.card_id != card.card_id
+    ]
     target.score -= old_score
     state.discarded[card.level].append(card)
     return (
@@ -154,9 +159,13 @@ def resolve_specialization(
         legal_cards = legal_card_targets(state, effect)
         if not legal_cards:
             return f"{name}：市场中没有可选宠物，效果失效"
-        if card not in legal_cards:
-            raise RuleError("泡沫幻影需要选择公共市场中的宠物")
-        assert card is not None
+        selected_card_id = card.card_id if card is not None else None
+        card = next(
+            (candidate for candidate in legal_cards if candidate.card_id == selected_card_id),
+            None,
+        )
+        if card is None:
+            raise RuleError("润泽需要选择公共市场中的宠物")
         highest = max(card.cost.values())
         choices = [item for item, amount in card.cost.items() if amount == highest]
         reduced = state.rng.choice(choices)
@@ -182,9 +191,13 @@ def resolve_specialization(
         legal_cards = legal_card_targets(state, effect)
         if not legal_cards:
             return f"{name}：市场中没有可选宠物，效果失效"
-        if card not in legal_cards:
+        selected_card_id = card.card_id if card is not None else None
+        card = next(
+            (candidate for candidate in legal_cards if candidate.card_id == selected_card_id),
+            None,
+        )
+        if card is None:
             raise RuleError("根吸收需要选择公共市场中的宠物")
-        assert card is not None
         card.score += 1
         card.specialization_glows.add(Attribute.GRASS)
         return f"{name}：{card.display_name} 的分数 +1"
@@ -205,10 +218,15 @@ def resolve_specialization(
 
     if (attribute, stage) == (Attribute.CUTE, 2):
         changed: list[str] = []
+        immune: list[str] = []
         for index, owner in enumerate(state.players):
             if index == effect.player_index:
                 continue
             if not owner.purchased:
+                continue
+            blocked = _apply_attack_immunity(player, owner, name)
+            if blocked:
+                immune.append(owner.name)
                 continue
             highest_level = max(card.level for card, _ in owner.purchased)
             eligible = [card for card, _ in owner.purchased if card.level == highest_level]
@@ -217,8 +235,9 @@ def resolve_specialization(
             chosen.score = 0
             owner.score -= old_score
             changed.append(f"{owner.name}:{chosen.display_name}（{highest_level}级）{old_score}分→0分")
-        detail = "；".join(changed) if changed else "其他玩家没有已购宠物"
-        return f"{name}：各自最高级宠物分数归零：{detail}"
+        detail = "；".join(changed) if changed else "其他玩家没有可影响的已购宠物"
+        immune_detail = f"；{'、'.join(immune)}免疫了攻击" if immune else ""
+        return f"{name}：各自最高级宠物分数归零：{detail}{immune_detail}"
 
     if (attribute, stage) == (Attribute.DARK, 1):
         legal_players = legal_player_targets(state, effect)
@@ -251,7 +270,10 @@ def resolve_specialization(
         if blocked:
             return blocked
         stolen_entry = state.rng.choice(victim.purchased)
-        victim.purchased.remove(stolen_entry)
+        stolen_card_id = stolen_entry[0].card_id
+        victim.purchased = [
+            entry for entry in victim.purchased if entry[0].card_id != stolen_card_id
+        ]
         player.purchased.append(stolen_entry)
         stolen_card = stolen_entry[0]
         victim.score -= stolen_card.effective_score

@@ -12,17 +12,19 @@
 - 每回合结算时，玩家可能根据已购宠物的属性组合获得公开的魔法师卡，每张魔法师卡加 3 分。双属性宠物同时计入两种属性。
 - 任一玩家达到 18 分时立即结束；如果公共市场全部耗尽，则完成本轮后结束。
 
-游戏规则和卡池明细见[游戏说明](./洛克王国魔法宝石.md)及[卡牌资料](./卡牌.md)。
+游戏规则和卡池明细见[游戏说明](./洛克王国魔法宝石.md)及[卡片资料](./卡片.md)。
 
 ## 运行要求
 
-- Python 3.11 或更高版本
-- 图形界面需要 PySide6 6.8 或更高版本
+- 命令行模式需要 Python 3.11 或更高版本
+- Qt 图形界面建议使用 Python 3.12 或更高版本，并安装 PySide6
 
 在项目根目录安装依赖：
 
 ```bash
-python3 -m pip install -e .
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 ```
 
 ## 启动游戏
@@ -72,7 +74,7 @@ python3 -m src.cli --ai-battle --random-seed --interval 0
 python3 -m src.cli --gui --ai-battle --random-seed --interval 0.5
 ```
 
-困难 AI 会综合当前卡牌分数、魔法师卡进度、专精门槛和资源成本进行选择，并在攻击时考虑对手的免疫状态；简单 AI 的决策更随机、短视。
+困难 AI 会综合当前卡片分数、魔法师卡进度、专精门槛和资源成本进行选择，并在攻击时考虑对手的免疫状态；简单 AI 的决策更随机、短视。
 
 `--interval` 设置 AI 行动间隔秒数，不能小于 0。命令行参数说明：
 
@@ -112,14 +114,19 @@ dist/Roco Kingdom Gem Master.exe
 - [Mixkit 免费音效](https://mixkit.co/free-sound-effects/)：购买音效来自 “Clinking coins”，预购音效来自 “Poker card flick”；项目中使用的是经过裁剪和音量调整的版本。Mixkit 的免费音效许可允许将音效用于游戏等成品，不能把素材本身作为独立素材重新分发；感谢 Mixkit 提供免费音效。详见 [Mixkit 音效许可](https://mixkit.co/license/modal/sfxFree/)。
 - [Freesound：marbles，声音编号 63784](https://freesound.org/s/63784/)：资源获取音效使用其处理后的片段。感谢原作者和 Freesound 社区；该音频的具体许可应以原声音页面为准。
 
-背景音乐文件为 `media/audio/魔法之匙.mp3`。Windows 使用系统音频接口播放，macOS 使用 `afplay`；Linux 需要安装 `mpv`、`ffplay` 或 VLC 之一。该曲目的来源和授权信息尚未记录在仓库中；如计划公开分发游戏，请先确认使用与再分发许可。属性图标、零碎图标及其他项目素材的来源和授权范围也应以各自原始来源为准。
+背景音乐和 WAV 音效由 Qt Multimedia 播放，可在对局右上角“设置 → 音量合成器”分别调节音量。该曲目的来源和授权信息尚未记录在仓库中；如计划公开分发游戏，请先确认使用与再分发许可。属性图标、零碎图标及其他项目素材的来源和授权范围也应以各自原始来源为准。
+
+Linux 若提示 `libpulse.so.0` 缺失，可在 Debian/Ubuntu 安装 `libpulse0`；若 Qt Multimedia 仍不可用，可安装 `mpv`、`ffplay` 或 VLC 作为背景音乐播放器，并安装 `paplay`、`pw-play` 或 `aplay` 播放音效。
 
 ## 日志与问题排查
 
 Qt 每局对战会单独写入 `logs/`，日志名以 `RocoKingdomGemMaster_` 开头，包含随机种子、玩家行动和专精结算记录。
 
-若遇到 `No module named src`，请先切换到包含 `pyproject.toml` 和 `src/` 的项目根目录。若遇到 `No module named PySide6`，请在当前 Python 环境安装 PySide6：
+若遇到 `No module named src`，请先切换到包含 `pyproject.toml` 和 `src/` 的项目根目录。Qt 图形界面请使用 Python 3.12+ 对应的虚拟环境；例如：
 
 ```bash
-python3 -m pip install PySide6
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+python -m src.cli --gui
 ```
