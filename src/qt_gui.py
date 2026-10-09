@@ -43,7 +43,7 @@ from .theme import (
     ATTRIBUTE_ICON_DIR, ATTRIBUTE_ICON_FILES, CARD_CORNER_RADIUS,
     HOVER_INSET_COLOR, HOVER_SURFACE_COLOR, ORNAMENT_COLOR, PANEL_COLOR,
     PLAYER_CURRENT_COLOR, PLAYER_STATUS_COLOR, RESERVED_AREA_BACKGROUND,
-    SERIF_FONT_FAMILIES, TABLETOP_COLOR, TEXT_COLOR,
+    UI_FONT_FAMILIES, TABLETOP_COLOR, TEXT_COLOR,
     RESOURCE_COLORS as ATTRIBUTE_COLORS,
     RESOURCE_SHARD_DIR, RESOURCE_SHARD_FILES,
 )
@@ -58,9 +58,9 @@ _ATTRIBUTE_ICON_SOURCES: dict[Attribute, QPixmap] = {}
 
 
 def load_embedded_font() -> bool:
-    """Register the bundled Source Han Serif font with this Qt application."""
+    """Register the bundled Kingnam Bobohei font with this Qt application."""
     resource_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
-    font_path = resource_root / "media" / "fonts" / "SourceHanSerifSC-Regular.otf"
+    font_path = resource_root / "media" / "fonts" / "KNBobohei-Bold.ttf"
     if not font_path.is_file():
         return False
     font_id = QFontDatabase.addApplicationFont(str(font_path))
@@ -70,12 +70,12 @@ def load_embedded_font() -> bool:
     return True
 
 
-def preferred_serif_family() -> str:
-    """Use Source Han Serif when installed, with a native serif fallback."""
+def preferred_ui_family() -> str:
+    """Prefer the bundled Kingnam Bobohei family, including its Chinese alias."""
     installed = {family.casefold(): family for family in QFontDatabase.families()}
     return next(
-        (installed[name.casefold()] for name in SERIF_FONT_FAMILIES if name.casefold() in installed),
-        SERIF_FONT_FAMILIES[0],
+        (installed[name.casefold()] for name in UI_FONT_FAMILIES if name.casefold() in installed),
+        UI_FONT_FAMILIES[0],
     )
 
 
@@ -1330,11 +1330,11 @@ class MagicGemsQtApp(QMainWindow):
     def __init__(self, seed: int = 1, ai_battle: bool = False, interval: float = .5, seed_mode: str = "fixed") -> None:
         super().__init__()
         load_embedded_font()
-        self.ui_font_family = preferred_serif_family()
+        self.ui_font_family = preferred_ui_family()
         app = QApplication.instance()
         if app is not None:
             app_font = QFont(self.ui_font_family)
-            app_font.setStyleHint(QFont.StyleHint.Serif)
+            app_font.setStyleHint(QFont.StyleHint.SansSerif)
             app.setFont(app_font)
         self.seed, self.seed_mode = seed, seed_mode
         self.ai_battle, self.ai_interval = ai_battle, max(0.0, interval)

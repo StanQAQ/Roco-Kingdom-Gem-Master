@@ -15,14 +15,9 @@ HOVER_SURFACE_COLOR = "#fff1e4"
 HOVER_INSET_COLOR = "#f3c9ab"
 RESERVED_AREA_BACKGROUND = "#efefef"
 CARD_CORNER_RADIUS = 7
-SERIF_FONT_FAMILIES = (
-    "Source Han Serif SC",
-    "思源宋体",
-    "Source Han Serif CN",
-    "Source Han Serif",
-    "Noto Serif CJK SC",
-    "Songti SC",
-    "STSong",
+UI_FONT_FAMILIES = (
+    "KN Bobohei",
+    "荆南波波黑",
 )
 
 
