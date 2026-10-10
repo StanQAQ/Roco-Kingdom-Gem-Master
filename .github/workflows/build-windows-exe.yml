@@ -28,6 +28,7 @@ jobs:
         run: >-
           python -m PyInstaller --noconfirm --clean --onefile --windowed
           --name "Roco Kingdom Gem Master"
+          --icon "../media/icon.ico"
           --distpath dist --workpath build --specpath build
           --exclude-module tests --exclude-module src.animation_demo
           --exclude-module simulate_balance --add-data "../media;media" run_game.py
