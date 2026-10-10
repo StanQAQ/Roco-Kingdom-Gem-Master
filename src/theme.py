@@ -14,18 +14,18 @@ PLAYER_STATUS_COLOR = "#f3eee1"  # 普通玩家状态栏背景色。
 PLAYER_CURRENT_COLOR = "#eec545"  # 当前行动玩家状态栏的高亮背景色。
 HOVER_SURFACE_COLOR = "#fff1e4"  # 玩家悬停详情窗口的外层背景色。
 HOVER_INSET_COLOR = "#f3eee1"  # 悬停详情窗口内嵌区域的背景色。
-RESERVED_AREA_BACKGROUND = "#efefef"  # 预购区域及卡牌容器的灰色底。
-CARD_CORNER_RADIUS = 7  # 卡牌圆角半径，单位为 Qt 逻辑像素。
+RESERVED_AREA_BACKGROUND = "#efefef"  # 预购区域及卡片容器的灰色底。
+CARD_CORNER_RADIUS = 7  # 卡片圆角半径，单位为 Qt 逻辑像素。
 PLAYER_HOVER_FONT_SIZE = 12  # 玩家状态悬停窗口中所有说明文字的统一字号，单位为 Qt 逻辑像素。
 UI_FONT_FAMILIES = (  # 界面字体候选顺序：优先使用随程序打包的字体，再回退到中文别名。
     "KN Bobohei",
     "荆南波波黑",
 )
 
-# 卡牌及价格文字颜色；这些常量也用于动画卡面，保持移动前后的外观一致。
+# 卡片及价格文字颜色；这些常量也用于动画卡面，保持移动前后的外观一致。
 CARD_FACE_COLOR = "#fff6e8"  # 公共市场普通宠物卡的底色。
 CARD_FACE_WARM_COLOR = "#fff5df"  # 购买、转移等动画浮层卡片的暖白底色。
-CARD_FACE_CREAM_COLOR = "#fffaf0"  # 已购卡和卡牌价格数字的奶油白底色。
+CARD_FACE_CREAM_COLOR = "#fffaf0"  # 已购卡和卡片价格数字的奶油白底色。
 CARD_BORDER_COLOR = "#b8b8b8"  # 普通宠物卡及中性动画卡片边框。
 CARD_SELECTED_COLOR = "#f4d484"  # 当前选中的宠物卡底色。
 CARD_AFFORDABLE_COLOR = "#dceecf"  # 当前玩家可购买宠物卡的提示底色。
@@ -50,7 +50,7 @@ CONTROL_DISABLED_TEXT_COLOR = "#8b8985"  # 不可领取的公共资源按钮文�
 STATUS_BADGE_COLOR = "#eec545"  # 游戏顶部模式标签的背景色。
 ORNAMENT_ACCENT_COLOR = "#eec545"  # 巴洛克边框及装饰花纹中的强调色。
 ORNAMENT_INK_COLOR = "#2f1414"  # 标题页装饰边框的深色线条。
-SPECIALIZATION_DUAL_GLOW_COLOR = "#4f8996"  # 同时带水、草专精效果卡牌的组合辉光色。
+SPECIALIZATION_DUAL_GLOW_COLOR = "#4f8996"  # 同时带水、草专精效果卡片的组合辉光色。
 TABLETOP_TEXTURE_RGBA = (69, 135, 149, 46)  # 木桌背景纹理线的颜色及透明度（RGBA）。
 PARCHMENT_FLECK_RGB = (69, 135, 149)  # 做旧牛皮纸细点纹理的蓝绿色基色（RGB）。
 PARCHMENT_FLECK_ALPHA_BASE = 10  # 做旧牛皮纸细点纹理透明度的起始值。
@@ -70,7 +70,7 @@ WIZARD_NOTICE_TEXT_COLOR = "#4a3017"  # 获得魔法师认可提示文字的深�
 SAGE_ACCENT_COLOR = "#bd903d"  # 贤者碎晶变化提示中的金色强调文字。
 SAGE_TEXT_COLOR = "#9b742c"  # 玩家状态中贤者碎晶数量的文字色。
 
-# 资源变化及卡牌受影响时显示的动画浮层配色。
+# 资源变化及卡片受影响时显示的动画浮层配色。
 RESOURCE_POPUP_BACKGROUND = "#ffffff"  # 普通资源变化提示框的白色背景。
 RESOURCE_POPUP_TEXT_COLOR = "#333333"  # 普通资源变化提示框的文字色。
 RESOURCE_POPUP_BORDER_COLOR = "#c8c8c8"  # 普通资源变化提示框的灰色边框。
@@ -79,7 +79,7 @@ SAGE_POPUP_TEXT_COLOR = "#634b16"  # 贤者碎晶变化提示框的深金棕文�
 SAGE_POPUP_BORDER_COLOR = "#d2aa4c"  # 贤者碎晶变化提示框的金色边框。
 IMPACT_CARD_TEXT_COLOR = "#252525"  # 动画卡片上宠物属性、分数等内容的文字色。
 IMPACT_CAPTION_BACKGROUND = "#fffaf0"  # 引燃、吞噬等动画说明标签的背景色。
-SPECIALIZATION_NEUTRAL_COLOR = "#7f654e"  # 未指定属性时，卡牌效果记录的默认强调色。
+SPECIALIZATION_NEUTRAL_COLOR = "#7f654e"  # 未指定属性时，卡片效果记录的默认强调色。
 
 # 回合提示颜色：自己的回合使用暖色提示，其他玩家的回合使用白色提示。
 OWN_TURN_BACKGROUND = "#fff4cf"  # 自己回合提示框的背景色。
@@ -111,7 +111,7 @@ RESOURCE_COLORS = {
 }
 
 RESOURCE_SHARD_DIR = "属性零碎图标"  # 各属性资源零碎图片所在的媒体子目录。
-ATTRIBUTE_ICON_DIR = "属性图标"  # 卡牌和玩家状态所用属性图标所在的媒体子目录。
+ATTRIBUTE_ICON_DIR = "属性图标"  # 卡片和玩家状态所用属性图标所在的媒体子目录。
 
 RESOURCE_SHARD_FILES = {
     Attribute.WATER: "水系零碎.png",  # 水属性资源零碎图片文件名。

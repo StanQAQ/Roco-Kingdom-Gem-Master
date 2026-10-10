@@ -96,47 +96,76 @@ def _refill_market_level(state: GameState, level: int) -> None:
         state.market.cards[level].append(state.decks[level].pop())
 
 
-def _remove_market_card(state: GameState, card: PetCard, *, refill: bool = True) -> None:
-    cards = state.market.cards[card.level]
-    if card not in cards:
-        raise RuleError("市场中没有这张宠物")
-    cards.remove(card)
-    if refill:
-        _refill_market_level(state, card.level)
+def _remove_market_card(state: GameState, card_id: str, *, refill: bool = True) -> PetCard:
+    for level, cards in state.market.cards.items():
+        index = next((index for index, card in enumerate(cards) if card.card_id == card_id), None)
+        if index is None:
+            continue
+        card = cards.pop(index)
+        if refill:
+            _refill_market_level(state, level)
+        return card
+    raise RuleError("市场中没有这张宠物")
 
 
 def buy_card(state: GameState, player: Player, card: PetCard, selected_dual: list[Attribute] | None = None) -> None:
-    payment = payment_for(player, card, selected_dual)
-    if card in state.market.cards[card.level]:
-        _remove_market_card(state, card, refill=False)
-    elif card in player.reserved:
-        player.reserved.remove(card)
+    market_card_id = next(
+        (
+            candidate.card_id
+            for cards in state.market.cards.values()
+            for candidate in cards
+            if candidate.card_id == card.card_id
+        ),
+        None,
+    )
+    reserved_index = next(
+        (index for index, candidate in enumerate(player.reserved) if candidate.card_id == card.card_id),
+        None,
+    )
+    if market_card_id is not None:
+        purchased_card = next(
+            candidate
+            for cards in state.market.cards.values()
+            for candidate in cards
+            if candidate.card_id == market_card_id
+        )
+    elif reserved_index is not None:
+        purchased_card = player.reserved[reserved_index]
     else:
         raise RuleError("这张宠物不可购买")
+    payment = payment_for(player, purchased_card, selected_dual)
+    if market_card_id is not None:
+        purchased_card = _remove_market_card(state, market_card_id, refill=False)
+    else:
+        player.reserved.pop(reserved_index)
     for attribute, amount in payment.normal.items():
         player.resources[attribute] -= amount
     player.light -= payment.light
     player.temporary_light -= payment.temporary_light
     _return_payment(state, payment)
     if player.next_purchase_score_doubled:
-        card.score_multiplier *= 2
+        purchased_card.score_multiplier *= 2
         player.next_purchase_score_doubled = False
-    player.purchased.append((card, None))
-    player.score += card.effective_score
+    player.purchased.append((purchased_card, None))
+    player.score += purchased_card.effective_score
     if player.next_purchase_free:
         player.next_purchase_free = False
 
 
 def reserve_card(state: GameState, player: Player, card: PetCard) -> None:
+    if not any(
+        candidate.card_id == card.card_id
+        for cards in state.market.cards.values()
+        for candidate in cards
+    ):
+        raise RuleError("市场中没有这张宠物")
     if len(player.reserved) >= 3:
         raise RuleError("预购区最多保留 3 张宠物")
-    if card not in state.market.cards[card.level]:
-        raise RuleError("只能预购公共市场中的宠物")
     if state.light_pool <= 0:
         raise RuleError("公共贤者碎晶不足")
     _check_capacity(player, 1)
-    _remove_market_card(state, card, refill=False)
-    player.reserved.append(card)
+    reserved_card = _remove_market_card(state, card.card_id, refill=False)
+    player.reserved.append(reserved_card)
     player.light += 1
     state.light_pool -= 1
 

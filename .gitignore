@@ -6,6 +6,7 @@ __pycache__/
 .Python
 
 # Python 虚拟环境与打包缓存
+.venv*/
 .venv/
 venv/
 env/
@@ -78,9 +79,6 @@ Desktop.ini
 *.tmp
 *.bak
 
-# 本地后续需求草稿
-后续需求.md
-
 # 本地测试与演示脚本；保留在工作区，不上传至 GitHub
 tests/
 /src/animation_demo.py
@@ -88,3 +86,9 @@ tests/
 
 # 原始文件
 original_file/
+
+# codex
+.codex/
+.aws/
+.agents/
+

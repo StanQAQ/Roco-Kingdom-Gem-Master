@@ -55,8 +55,9 @@ def _wizard_bonus(player: Player, card: PetCard, game: Game) -> float:
     after = before.copy()
     after.update(card.attributes)
     value = 0.0
+    owned_wizard_ids = {owned.card_id for owned in player.wizard_cards}
     for wizard in game.state.wizard_market:
-        if wizard in player.wizard_cards:
+        if wizard.card_id in owned_wizard_ids:
             continue
         requirements = dict(wizard.requirements)
         was_eligible = all(before[attribute] >= amount for attribute, amount in requirements.items())
@@ -132,8 +133,9 @@ def _hard_target_value(
     """Estimate the value and resource distance of a card as a future goal."""
     player = player or game.state.current()
     best_value = float("-inf")
+    reserved_ids = {reserved.card_id for reserved in player.reserved}
     for choices in _all_choices(player):
-        value = _card_value(card, card in player.reserved)
+        value = _card_value(card, card.card_id in reserved_ids)
         value += _wizard_bonus(player, card, game)
         value += _specialization_bonus(player, card)
         value -= sum(_needs(player, card, choices).values()) * 5
@@ -144,10 +146,11 @@ def _hard_target_value(
 def _best_target(game: Game, candidates: list[PetCard]) -> tuple[PetCard, tuple[Attribute, ...]] | None:
     player = game.state.current()
     best: tuple[float, PetCard, tuple[Attribute, ...]] | None = None
+    reserved_ids = {reserved.card_id for reserved in player.reserved}
     for card in candidates:
         for choices in _all_choices(player):
             needs = _needs(player, card, choices)
-            value = _card_value(card, card in player.reserved)
+            value = _card_value(card, card.card_id in reserved_ids)
             value += _wizard_bonus(player, card, game)
             value += _specialization_bonus(player, card)
             # 目标越近越好；仍让高分卡值得逐步积累，但避免只追逐遥不可及的高价卡。
@@ -353,6 +356,7 @@ def choose_action(game: Game, difficulty: str = "hard") -> Action:
     player = game.state.current()
     market_cards = game.state.market.cards[1] + game.state.market.cards[2] + game.state.market.cards[3]
     candidates = market_cards + player.reserved
+    reserved_ids = {reserved.card_id for reserved in player.reserved}
     affordable: list[tuple[float, PetCard, tuple[Attribute, ...]]] = []
     for card in candidates:
         for choices in _all_choices(player):
@@ -361,7 +365,7 @@ def choose_action(game: Game, difficulty: str = "hard") -> Action:
             except RuleError:
                 continue
             value = _hard_card_value(game, player, card, choices)
-            if card in player.reserved:
+            if card.card_id in reserved_ids:
                 value += 8
             affordable.append((value, card, choices))
     if affordable:

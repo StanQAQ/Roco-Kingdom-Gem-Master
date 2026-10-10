@@ -66,12 +66,12 @@ def read_action(game: Game) -> Action:
         players = legal_player_targets(game.state, effect)
         print("结算属性专精：" + specialization_name(effect))
         if cards:
-            print("可选卡牌：")
+            print("可选卡片：")
             for index, card in enumerate(cards, start=1):
                 print(f"  {index}. {card.display_name}（{card.level}级，{card.cost_text() or '无成本'}，{card.effective_score}分）")
-            choice = int(input("选择卡牌序号：").strip())
+            choice = int(input("选择卡片序号：").strip())
             if not 1 <= choice <= len(cards):
-                raise RuleError("无效的专精卡牌选择")
+                raise RuleError("无效的专精卡片选择")
             return Action("specialization", card=cards[choice - 1])
         if players:
             print("可选玩家：" + " ".join(f"{index}:{game.state.players[index].name}" for index in players))
@@ -93,13 +93,13 @@ def read_action(game: Game) -> Action:
         *((card, "预购") for card in player.reserved),
     ]
     if not candidates:
-        raise RuleError(f"{level}级市场没有可选卡牌")
-    print("可选卡牌：")
+        raise RuleError(f"{level}级市场没有可选卡片")
+    print("可选卡片：")
     for index, (card, zone) in enumerate(candidates, start=1):
         print(f"  {index}. {card.display_name}（{zone}，{card.level}级，{card.cost_text() or '无成本'}，{card.effective_score}分）")
-    choice = int(input("选择卡牌序号：").strip())
+    choice = int(input("选择卡片序号：").strip())
     if not 1 <= choice <= len(candidates):
-        raise RuleError("无效的卡牌选择")
+        raise RuleError("无效的卡片选择")
     card = candidates[choice - 1][0]
     if command == "r":
         return Action("reserve", card=card)
@@ -122,8 +122,21 @@ def main() -> None:
             parser.error("图形界面需要 Python 3.11+")
         try:
             from PySide6.QtWidgets import QApplication  # noqa: F401
+            from PySide6.QtGui import QColor
         except ImportError:
             parser.error("Qt6 图形界面需要安装 PySide6：python -m pip install PySide6")
+        if sys.version_info < (3, 12):
+            # PySide6 6.12's abi3 bindings can over-decrement None when called
+            # from CPython 3.11. Detect it before the paint loop turns that
+            # reference-count error into a process-wide none_dealloc abort.
+            color = QColor()
+            none_refcount = sys.getrefcount(None)
+            color.setAlpha(255)
+            if sys.getrefcount(None) < none_refcount:
+                parser.error(
+                    "当前 PySide6 与 CPython 3.11 的组合会错误减少 None 的引用计数，"
+                    "可能导致 none_dealloc 崩溃。请改用 Python 3.12+，并在该版本中安装 PySide6。"
+                )
     if args.gui and not args.ai_battle:
         # 普通 GUI 要等玩家选定具体难度后再生成随机种子。
         seed = args.seed

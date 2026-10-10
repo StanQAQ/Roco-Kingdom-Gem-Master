@@ -62,7 +62,7 @@ class MagicGemsApp(tk.Tk):
         self.start_game_log()
         self.card_buttons: list[tk.Widget] = []
         self.status_var = tk.StringVar()
-        self.selection_var = tk.StringVar(value="尚未选择卡牌")
+        self.selection_var = tk.StringVar(value="尚未选择卡片")
         self.market_frame: tk.Frame
         self.players_frame: tk.Frame
         self.resource_frame: tk.Frame
@@ -394,7 +394,7 @@ class MagicGemsApp(tk.Tk):
     def configure_card_button(self, button: tk.Button, card: PetCard) -> None:
         attributes = "/".join(attribute.value for attribute in card.attributes)
         transformed = f"↓{name_for_card_id(card.transformed_from)}" if card.transformed_from else ""
-        selected = card is self.selected_card
+        selected = self.selected_card is not None and card.card_id == self.selected_card.card_id
         can_buy = self.can_current_player_buy(card)
         card_action_enabled = (
             self.game.state.current_player == 0
@@ -527,7 +527,7 @@ class MagicGemsApp(tk.Tk):
             self.cancel_resource_button = tk.Button(resource_actions, text="取消", command=self.cancel_resource_selection)
             self.cancel_resource_button.pack(side="left", fill="x", expand=True, pady=2)
 
-            self.display_button(self.action_frame, text="卡牌行动", font=("Songti SC", 9, "bold")).pack(fill="x", pady=(0, 3))
+            self.display_button(self.action_frame, text="卡片行动", font=("Songti SC", 9, "bold")).pack(fill="x", pady=(0, 3))
             self.buy_button = tk.Button(self.action_frame, text="购买选中宠物", command=self.buy_selected)
             self.buy_button.pack(fill="x", pady=4)
             self.reserve_button = tk.Button(self.action_frame, text="预购选中宠物", command=self.reserve_selected)
@@ -575,7 +575,7 @@ class MagicGemsApp(tk.Tk):
 
     def cancel_card_selection(self) -> None:
         self.selected_card = None
-        self.selection_var.set("尚未选择卡牌")
+        self.selection_var.set("尚未选择卡片")
         self.refresh()
 
     def set_resource_mode(self, mode: str) -> None:
@@ -757,7 +757,7 @@ class MagicGemsApp(tk.Tk):
             for message in effect_messages:
                 self.log(message)
             self.selected_card = None
-            self.selection_var.set("尚未选择卡牌")
+            self.selection_var.set("尚未选择卡片")
             if action.kind in {"different", "same"}:
                 self.resource_mode = None
             if actor_index == 0 and not self.ai_battle:
@@ -768,7 +768,7 @@ class MagicGemsApp(tk.Tk):
         except (RuleError, ValueError) as error:
             card_text = action.card.display_name if action.card is not None else "无"
             choices_text = "、".join(attribute.value for attribute in action.dual_choices) or "无"
-            self.game_logger.warning("操作无效：%s | 动作=%s 卡牌=%s 双属性选择=%s", error, action.kind, card_text, choices_text)
+            self.game_logger.warning("操作无效：%s | 动作=%s 卡片=%s 双属性选择=%s", error, action.kind, card_text, choices_text)
             messagebox.showwarning("操作无效", str(error))
 
     def play_ai_turn(self) -> None:
@@ -813,7 +813,7 @@ class MagicGemsApp(tk.Tk):
         self.ai_turn_scheduled = False
         self.close_game_log()
         self.start_game_log()
-        self.selection_var.set("尚未选择卡牌")
+        self.selection_var.set("尚未选择卡片")
         self.log_messages.clear()
         self.log_offset = 0
         self.render_log()

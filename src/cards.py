@@ -6,7 +6,7 @@ from .models import Attribute, PetCard, normalize_cost
 
 A = Attribute
 
-# 卡牌名称以卡牌.md为准；卡号仅用于游戏逻辑和定位卡片。
+# 卡片名称以卡片.md为准；卡号仅用于游戏逻辑和定位卡片。
 CARD_NAMES = {
     'S01': '水蓝蓝', 'S02': '板板壳', 'S03': '小鼠獭', 'S04': '水滴蛇', 'S05': '乖乖鹄',
     'S06': '护主犬', 'S07': '小勇狮', 'S08': '热团团', 'S09': '火花', 'S10': '红火尾',
@@ -36,7 +36,7 @@ def name_for_card_id(card_id: str | None) -> str:
         return ""
     return CARD_NAMES.get(card_id, card_id)
 
-# 卡牌.md中与旧牌库不同的属性、分数和成本，格式为：(属性, 分数, 成本)。
+# 卡片.md中与旧牌库不同的属性、分数和成本，格式为：(属性, 分数, 成本)。
 CARD_DATA_CORRECTIONS = {
     'D04': ((A.WATER, A.CUTE), 0, [(A.FIRE, 1), (A.CUTE, 1), (A.DARK, 2)]),
     'D05': ((A.WATER, A.CUTE), 1, [(A.FIRE, 2), (A.CUTE, 1), (A.DARK, 1)]),

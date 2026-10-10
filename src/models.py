@@ -51,6 +51,7 @@ class WizardCard:
     name: str
     requirements: tuple[tuple[Attribute, int], ...]
     score: int = 3
+    card_id: str = ""
 
     @property
     def requirement_text(self) -> str:
