@@ -1714,6 +1714,7 @@ class MagicGemsQtApp(QMainWindow):
         self.deferred_market_card_ids: set[str] = set()
         self.market_refill_without_animation = False
         self.deferred_reserved_card_ids: set[str] = set()
+        self.reserved_card_preview: CardButton | None = None
         self.deferred_purchased_card_ids: set[str] = set()
         self.log_messages: list[tuple[str, str, bool]] = []
         self.dual_move_order: dict[str, int] = {}
@@ -2743,6 +2744,7 @@ class MagicGemsQtApp(QMainWindow):
         self.pool_resource_layout.addLayout(fixed_row)
 
     def render_reserved(self) -> None:
+        self.hide_reserved_card_preview()
         self.clear_section_body(self.reserved_layout)
         self.reserved_buttons: list[CardButton] = []
         self.reserved_card_views: dict[str, CardButton] = {}
@@ -2758,6 +2760,8 @@ class MagicGemsQtApp(QMainWindow):
         grid.setSpacing(4)
         for index, card in enumerate(self.game.state.players[0].reserved):
             button = CardButton(44)
+            button.setProperty("reservedCardPreviewId", card.card_id)
+            button.installEventFilter(self)
             button.clicked.connect(lambda _=False, c=card: self.select_card(c))
             self.configure_card(button, card)
             if card.card_id in self.deferred_reserved_card_ids:
@@ -3152,6 +3156,23 @@ class MagicGemsQtApp(QMainWindow):
 
     def eventFilter(self, watched, event) -> bool:
         event_type = event.type()
+        reserved_card_id = watched.property("reservedCardPreviewId") if isinstance(watched, QWidget) else None
+        if reserved_card_id is not None:
+            if event_type == QEvent.Type.Enter:
+                card = next(
+                    (
+                        item
+                        for item in self.game.state.players[0].reserved
+                        if item.card_id == reserved_card_id
+                    ),
+                    None,
+                )
+                if card is not None:
+                    self.show_reserved_card_preview(watched, card)
+            elif event_type == QEvent.Type.Leave:
+                self.hide_reserved_card_preview()
+            return super().eventFilter(watched, event)
+
         if watched is getattr(self, "player_hover_card", None):
             if event_type == QEvent.Type.Enter:
                 self.player_hover_hide_timer.stop()
@@ -3169,6 +3190,30 @@ class MagicGemsQtApp(QMainWindow):
             elif event_type == QEvent.Type.Leave:
                 self.player_hover_hide_timer.start()
         return super().eventFilter(watched, event)
+
+    def show_reserved_card_preview(self, anchor: QWidget, card: PetCard) -> None:
+        """放大展示预购卡片，但不改变预购区布局和滚动位置。"""
+        if self.reserved_card_preview is None:
+            self.reserved_card_preview = CardButton(self.CARD_WIDTH, self.game_page)
+            self.reserved_card_preview.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+            )
+            self.reserved_card_preview.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        preview = self.reserved_card_preview
+        self.configure_card(preview, card, highlight_affordable=False)
+        anchor_top_left = anchor.mapTo(self.game_page, QPoint(0, 0))
+        x = anchor_top_left.x() - (preview.width() - anchor.width()) // 2
+        y = anchor_top_left.y() - (preview.height() - anchor.height()) // 2
+        x = max(0, min(x, self.game_page.width() - preview.width()))
+        y = max(0, min(y, self.game_page.height() - preview.height()))
+        preview.move(x, y)
+        preview.show()
+        preview.raise_()
+
+    def hide_reserved_card_preview(self) -> None:
+        if self.reserved_card_preview is not None:
+            self.reserved_card_preview.hide()
 
     @staticmethod
     def current_player_effects(player: Player) -> list[str]:
