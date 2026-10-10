@@ -7,7 +7,7 @@ from .rules import RuleError, buy_card, refill_market, reserve_card, take_differ
 from .specializations import detect_specializations, resolve_specialization
 from .wizards import award_eligible_wizard_cards
 
-VICTORY_SCORE = 18
+VICTORY_SCORE = 20
 
 
 @dataclass(frozen=True)
@@ -103,11 +103,10 @@ class Game:
         market_exhausted = not any(self.state.market.cards[level] for level in (1, 2, 3))
         if any(player.score >= VICTORY_SCORE for player in self.state.players):
             self.state.end_triggered = True
-            self.state.finished = True
-            return messages
         if market_exhausted:
             self.state.end_triggered = True
         self.state.next_player()
+        # 达到胜利分数后完成当前整轮，让本轮剩余玩家仍有一次行动机会。
         if self.state.end_triggered and self.state.current_player == 0:
             self.state.finished = True
         if not self.state.finished:

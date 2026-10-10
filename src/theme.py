@@ -90,17 +90,6 @@ OTHER_TURN_TEXT_COLOR = "#343434"  # 其他玩家回合提示框的深灰文字�
 OTHER_TURN_BORDER_COLOR = "#c8c8c8"  # 其他玩家回合提示框的灰色边框。
 END_OVERLAY_RGBA = (35, 20, 19, 165)  # 游戏结束遮罩层的颜色及透明度（RGBA）。
 
-# 旧版 Tk 界面的颜色单独保留，以免影响其与 Qt 界面不同的旧布局外观。
-LEGACY_TABLETOP_COLOR = "#f4efe6"  # 旧版 Tk 主窗口及市场背景色。
-LEGACY_HEADER_COLOR = "#263238"  # 旧版 Tk 顶部标题栏及未选中文字色。
-LEGACY_SIDEBAR_COLOR = "#e8dfd1"  # 旧版 Tk 右侧栏及其内容区背景色。
-LEGACY_LOG_BACKGROUND = "#f8f4ed"  # 旧版 Tk 行动记录区域背景色。
-LEGACY_PLAYER_COLOR = "#f2ede6"  # 旧版 Tk 普通玩家状态卡背景色。
-LEGACY_CURRENT_PLAYER_COLOR = "#e5e9d8"  # 旧版 Tk 当前玩家状态卡背景色。
-LEGACY_RESOURCE_BACKGROUND = "#f7eee0"  # 旧版 Tk 资源状态区域背景色。
-LEGACY_RESOURCE_SELECTED_TEXT = "#ffffff"  # 旧版 Tk 被选资源按钮上的文字色。
-
-
 # 各属性颜色值依次为浅色背景和饱和强调色，分别用于底色及文字/边框。
 RESOURCE_COLORS = {
     Attribute.WATER: ("#e2ecff", "#3e6fc6"),  # 水：浅蓝底色、蓝色强调色。

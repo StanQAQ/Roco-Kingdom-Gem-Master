@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from itertools import combinations, product
 
-from .game import Action, Game
+from .game import Action, Game, VICTORY_SCORE
 from .models import ATTRIBUTES, Attribute, PetCard, Player
 from .rules import RuleError, payment_for
 from .specializations import legal_card_targets, legal_player_targets
@@ -111,7 +111,7 @@ def _hard_card_value(
     # 普通灵碎可替代未来购卡资源；贤者碎晶更灵活，因此计入更高机会成本。
     value -= sum(payment.normal.values()) * 0.8
     value -= payment.light * 2.5 + payment.temporary_light * 1.5
-    if player.score + card.effective_score >= 18:
+    if player.score + card.effective_score >= VICTORY_SCORE:
         value += 10_000  # 立即达成胜利的购买优先于长期收益。
     return value
 

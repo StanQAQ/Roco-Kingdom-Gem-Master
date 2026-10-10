@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from html import escape as html_escape
+import array
 import copy
+from io import BytesIO
 import logging
 import math
 from pathlib import Path
@@ -11,7 +13,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
+import wave
 
 from PySide6.QtCore import (
     QEasingCurve, QEvent, QPoint, Property, QPauseAnimation, QRect, Signal, Qt, QParallelAnimationGroup, QPropertyAnimation,
@@ -53,7 +57,7 @@ from .theme import (
     CARD_SELECTED_COLOR, CONTROL_DISABLED_FILL_COLOR,
     CONTROL_DISABLED_TEXT_COLOR, END_OVERLAY_RGBA, HOVER_INSET_COLOR,
     HOVER_SURFACE_COLOR, IMPACT_CAPTION_BACKGROUND, IMPACT_CARD_TEXT_COLOR,
-    LEGACY_CURRENT_PLAYER_COLOR, LOG_TEXT_COLOR, ORNAMENT_ACCENT_COLOR,
+    LOG_TEXT_COLOR, ORNAMENT_ACCENT_COLOR,
     DECORATION_COLOR, ORNAMENT_INK_COLOR,
     OTHER_TURN_BACKGROUND, PANEL_BORDER_COLOR,
     OTHER_TURN_BORDER_COLOR, OTHER_TURN_TEXT_COLOR, OWN_TURN_BACKGROUND,
@@ -618,6 +622,7 @@ class SoundEffects:
             "click": audio_dir / "click.wav",
         }
         self._volume = 0.8
+        self._scaled_wav_cache: dict[str, tuple[float, bytes]] = {}
         self._effects: dict[str, object] = {}
         self._pending: dict[str, int] = {name: 0 for name in self._sound_paths}
         if QSoundEffect is not None:
@@ -660,24 +665,86 @@ class SoundEffects:
         return None
 
     @staticmethod
-    def _wait_for_player(process: subprocess.Popen) -> None:
+    def _wait_for_player(
+        process: subprocess.Popen,
+        temporary_path: Path | None = None,
+    ) -> None:
         try:
             process.wait(timeout=5)
         except (OSError, subprocess.TimeoutExpired):
             process.kill()
             process.wait()
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def _play_windows_wav(self, sound_path: Path) -> None:
         """Play the bundled WAV on a worker thread to keep the GUI responsive."""
         try:
             import winsound
 
-            # The file is a permanent project/bundle resource. Synchronous
-            # playback is safe here because this method runs on a worker thread.
+            if self._volume <= 0:
+                return
+            sound_data = self._scaled_wav_data(sound_path)
+            # winsound has no per-sound volume setting, so use a scaled WAV in
+            # memory instead of changing the user's system-wide output volume.
             with self._windows_playback_lock:
-                winsound.PlaySound(str(sound_path), winsound.SND_FILENAME)
+                winsound.PlaySound(sound_data, winsound.SND_MEMORY)
         except (ImportError, OSError, RuntimeError):
             logging.getLogger(__name__).exception("Could not play sound asset: %s", sound_path)
+
+    def _scaled_wav_data(self, sound_path: Path) -> bytes:
+        """Return cached PCM WAV data scaled to the current effects volume."""
+        cache_key = str(sound_path)
+        cached = self._scaled_wav_cache.get(cache_key)
+        if cached is not None and cached[0] == self._volume:
+            return cached[1]
+
+        with wave.open(str(sound_path), "rb") as source:
+            params = source.getparams()
+            frames = source.readframes(params.nframes)
+        volume = self._volume
+        if params.sampwidth == 2:
+            samples = array.array("h")
+            samples.frombytes(frames)
+            if sys.byteorder != "little":
+                samples.byteswap()
+            for index, sample in enumerate(samples):
+                samples[index] = max(-32768, min(32767, round(sample * volume)))
+            if sys.byteorder != "little":
+                samples.byteswap()
+            frames = samples.tobytes()
+        elif params.sampwidth == 1:
+            frames = bytes(
+                max(0, min(255, round((sample - 128) * volume + 128)))
+                for sample in frames
+            )
+        elif params.sampwidth == 4:
+            samples = array.array("i")
+            samples.frombytes(frames)
+            if sys.byteorder != "little":
+                samples.byteswap()
+            for index, sample in enumerate(samples):
+                samples[index] = max(-(2**31), min(2**31 - 1, round(sample * volume)))
+            if sys.byteorder != "little":
+                samples.byteswap()
+            frames = samples.tobytes()
+
+        scaled_file = BytesIO()
+        with wave.open(scaled_file, "wb") as destination:
+            destination.setparams(params)
+            destination.writeframes(frames)
+        result = scaled_file.getvalue()
+        self._scaled_wav_cache[cache_key] = (volume, result)
+        return result
+
+    def _scaled_wav_temp_path(self, sound_path: Path) -> Path:
+        """Write a temporary scaled WAV for external players such as aplay."""
+        with tempfile.NamedTemporaryFile(
+            prefix="roco-sfx-", suffix=".wav", delete=False
+        ) as temp_file:
+            temp_file.write(self._scaled_wav_data(sound_path))
+            return Path(temp_file.name)
 
     def play(self, sound: str) -> None:
         sound_path = self._sound_paths.get(sound, self._sound_paths["click"])
@@ -692,6 +759,8 @@ class SoundEffects:
             logging.getLogger(__name__).error("Sound asset not found: %s", sound_path)
             QApplication.beep()
             return
+        if self._volume <= 0:
+            return
         if sys.platform == "win32":
             threading.Thread(
                 target=self._play_windows_wav,
@@ -701,19 +770,38 @@ class SoundEffects:
             return
 
         if self._player:
+            player_name = Path(self._player[0]).name.casefold()
+            temporary_path = None
+            if player_name == "afplay":
+                command = [*self._player, "-v", str(self._volume), str(sound_path)]
+            elif player_name == "pw-play":
+                command = [*self._player, f"--volume={self._volume}", str(sound_path)]
+            elif player_name == "paplay":
+                command = [
+                    *self._player,
+                    f"--volume={round(self._volume * 65536)}",
+                    str(sound_path),
+                ]
+            elif player_name == "aplay":
+                temporary_path = self._scaled_wav_temp_path(sound_path)
+                command = [*self._player, str(temporary_path)]
+            else:
+                command = [*self._player, str(sound_path)]
             try:
                 process = subprocess.Popen(
-                    [*self._player, str(sound_path)],
+                    command,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
                 threading.Thread(
                     target=self._wait_for_player,
-                    args=(process,),
+                    args=(process, temporary_path),
                     daemon=True,
                 ).start()
                 return
             except OSError:
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
                 logging.getLogger(__name__).exception("Could not start audio player for %s", sound_path)
 
         QApplication.beep()
@@ -744,6 +832,14 @@ class BackgroundMusic:
             self._qt_player.setAudioOutput(self._qt_output)
             self._qt_player.setSource(QUrl.fromLocalFile(str(self._music_path)))
             self._qt_player.setLoops(QMediaPlayer.Loops.Infinite)
+            self._qt_player.errorOccurred.connect(self._on_qt_player_error)
+
+    @staticmethod
+    def _on_qt_player_error(error, message: str) -> None:
+        """记录 Qt/AVFoundation 播放错误，便于排查 macOS 多媒体后端问题。"""
+        logging.getLogger(__name__).error(
+            "Qt background music playback failed (%s): %s", error, message
+        )
 
     def set_volume(self, volume: float) -> None:
         self._volume = max(0.0, min(1.0, float(volume)))
@@ -797,9 +893,36 @@ class BackgroundMusic:
                 self._mci_send(f"stop {alias}")
                 self._mci_send(f"close {alias}")
 
-    def _play_process(self, command: list[str], restart_when_finished: bool) -> None:
-        """在后台线程播放；afplay 播完后重启，其他播放器自行循环。"""
+    def _external_music_command(self) -> tuple[list[str] | None, bool]:
+        """Return the available external player command and whether it loops by restart."""
+        mpv = shutil.which("mpv")
+        ffplay = shutil.which("ffplay")
+        vlc = shutil.which("cvlc")
+        if mpv:
+            return [
+                mpv, "--no-video", "--loop-file=inf", "--really-quiet",
+                f"--volume={round(self._volume * 100)}", str(self._music_path),
+            ], False
+        if ffplay:
+            return [
+                ffplay, "-nodisp", "-loglevel", "error", "-volume",
+                str(round(self._volume * 100)), "-stream_loop", "-1", "-i",
+                str(self._music_path),
+            ], False
+        if vlc:
+            return [vlc, "--intf", "dummy", "--loop", f"--gain={self._volume}", str(self._music_path)], False
+        return None, False
+
+    def _play_process(self) -> None:
+        """Play in the background; volume changes never restart the current track."""
         while not self._stop_event.is_set():
+            command, restart_when_finished = self._external_music_command()
+            if command is None:
+                logging.getLogger(__name__).warning(
+                    "Background music is unavailable: Qt Multimedia could not load (%s); install libpulse0 on Debian/Ubuntu, or install mpv, ffplay, or VLC",
+                    QT_MULTIMEDIA_IMPORT_ERROR or "module unavailable",
+                )
+                return
             try:
                 process = subprocess.Popen(
                     command,
@@ -827,6 +950,8 @@ class BackgroundMusic:
                 with self._lock:
                     if self._process is process:
                         self._process = None
+            if self._stop_event.is_set():
+                return
             if not restart_when_finished:
                 return
 
@@ -848,6 +973,16 @@ class BackgroundMusic:
         if app is not None and app.platformName().casefold() == "offscreen":
             return
 
+        # macOS 必须使用 Qt/AVFoundation 播放器，才能在播放过程中通过
+        # QAudioOutput.setVolume 即时调节；afplay 只支持启动时指定音量。
+        if sys.platform == "darwin" and self._qt_player is None:
+            logging.getLogger(__name__).error(
+                "Background music on macOS requires PySide6.QtMultimedia; "
+                "install the project's PySide6 dependency to enable live volume control (%s)",
+                QT_MULTIMEDIA_IMPORT_ERROR or "Qt Multimedia unavailable",
+            )
+            return
+
         if self._qt_player is not None:
             self._stop_event.clear()
             self._qt_player.play()
@@ -858,29 +993,8 @@ class BackgroundMusic:
             target = self._play_windows
             args: tuple = ()
         else:
-            command: list[str] | None = None
-            restart_when_finished = False
-            if sys.platform == "darwin" and Path("/usr/bin/afplay").exists():
-                command = ["/usr/bin/afplay", "-v", str(self._volume), str(self._music_path)]
-                restart_when_finished = True
-            else:
-                mpv = shutil.which("mpv")
-                ffplay = shutil.which("ffplay")
-                vlc = shutil.which("cvlc")
-                if mpv:
-                    command = [mpv, "--no-video", "--loop-file=inf", "--really-quiet", f"--volume={round(self._volume * 100)}", str(self._music_path)]
-                elif ffplay:
-                    command = [ffplay, "-nodisp", "-loglevel", "error", "-volume", str(round(self._volume * 100)), "-stream_loop", "-1", "-i", str(self._music_path)]
-                elif vlc:
-                    command = [vlc, "--intf", "dummy", "--loop", f"--gain={self._volume}", str(self._music_path)]
-            if command is None:
-                logging.getLogger(__name__).warning(
-                    "Background music is unavailable: Qt Multimedia could not load (%s); install libpulse0 on Debian/Ubuntu, or install mpv, ffplay, or VLC",
-                    QT_MULTIMEDIA_IMPORT_ERROR or "module unavailable",
-                )
-                return
             target = self._play_process
-            args = (command, restart_when_finished)
+            args = ()
 
         self._thread = threading.Thread(target=target, args=args, daemon=True)
         self._thread.start()
@@ -1717,6 +1831,20 @@ class MagicGemsQtApp(QMainWindow):
         # fixed card height with the popup buttons' much shorter minimum.
         return f"{selector} {{ background:{PANEL_COLOR}; color:{TEXT_COLOR}; }}"
 
+    @staticmethod
+    def volume_slider_stylesheet() -> str:
+        """Return the shared slider style using the game's central palette."""
+        return (
+            f"QSlider::groove:horizontal {{ height:14px; background:{PANEL_COLOR}; "
+            f"border:2px solid {PANEL_BORDER_COLOR}; border-radius:8px; }}"
+            f"QSlider::sub-page:horizontal {{ background:{ORNAMENT_ACCENT_COLOR}; border:0; border-radius:6px; }}"
+            f"QSlider::add-page:horizontal {{ background:{PANEL_COLOR}; border-radius:6px; }}"
+            f"QSlider::handle:horizontal {{ width:22px; margin:-6px 0; "
+            f"border:2px solid {PANEL_BORDER_COLOR}; border-radius:11px; "
+            f"background:qradialgradient(cx:0.32, cy:0.28, radius:0.9, stop:0 {PANEL_COLOR}, "
+            f"stop:0.55 {BUTTON_PRESSED_COLOR}, stop:1 {TEXT_COLOR}); }}"
+        )
+
     def style_popup_buttons(self, root: QWidget) -> None:
         """Apply shared popup buttons without overriding the designed pet cards."""
         for button in root.findChildren(QPushButton):
@@ -1736,6 +1864,8 @@ class MagicGemsQtApp(QMainWindow):
         dialog.setStyleSheet(self.popup_dialog_stylesheet("QMessageBox"))
         dialog.setFont(QFont(self.ui_font_family))
         self.style_popup_buttons(dialog)
+        dialog.adjustSize()
+        dialog.setFixedSize(dialog.size())
         if icon == QMessageBox.Icon.Warning:
             ok_button = dialog.button(QMessageBox.StandardButton.Ok)
             if ok_button is not None:
@@ -1975,73 +2105,82 @@ class MagicGemsQtApp(QMainWindow):
         self.refresh()
 
     def show_settings(self) -> None:
+        if not self.game_started:
+            return
         dialog = QDialog(self)
         dialog.setObjectName("settingsDialog")
         dialog.setWindowTitle("设置")
-        dialog.setFixedSize(390, 260)
         dialog.setStyleSheet(self.popup_dialog_stylesheet())
         dialog.setFont(QFont(self.ui_font_family))
         layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(14)
 
         heading = QLabel("设置")
+        heading.setObjectName("settingsHeading")
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         heading.setStyleSheet(f"font-size:18px;font-weight:bold;color:{TEXT_COLOR};background:transparent;border:0;")
         layout.addWidget(heading)
         rules_button = QPushButton("规则速查")
         rules_button.clicked.connect(lambda: (dialog.accept(), self.show_game_rules()))
         mixer_button = QPushButton("音量合成器")
         mixer_button.clicked.connect(lambda: (dialog.accept(), self.show_volume_mixer()))
-        title_button = QPushButton("退出到标题")
-        title_button.clicked.connect(lambda: (dialog.accept(), self.confirm_return_to_title()))
-        for button in (rules_button, mixer_button, title_button):
-            button.setMinimumHeight(34)
+        buttons = [rules_button, mixer_button]
+        if self.game_started:
+            title_button = QPushButton("退出到标题")
+            title_button.clicked.connect(lambda: (dialog.accept(), self.confirm_return_to_title()))
+            buttons.append(title_button)
+        for button in buttons:
+            button.setFixedHeight(48)
             layout.addWidget(button)
         layout.addStretch(1)
         close_button = QPushButton("关闭")
+        close_button.setFixedSize(120, 44)
         close_button.clicked.connect(dialog.accept)
         layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
         self.style_popup_buttons(dialog)
+        dialog.setFixedSize(460, 380)
         dialog.exec()
 
     def show_volume_mixer(self) -> None:
         dialog = QDialog(self)
         dialog.setObjectName("volumeMixerDialog")
         dialog.setWindowTitle("音量合成器")
-        dialog.setFixedSize(470, 235)
         dialog.setStyleSheet(self.popup_dialog_stylesheet())
         dialog.setFont(QFont(self.ui_font_family))
         layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 16, 18, 14)
-        layout.setSpacing(13)
+        layout.setContentsMargins(24, 18, 24, 18)
+        layout.setSpacing(12)
 
         title = QLabel("音量合成器")
+        title.setObjectName("volumeMixerHeading")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"font-size:18px;font-weight:bold;color:{TEXT_COLOR};background:transparent;border:0;")
         layout.addWidget(title)
-        slider_style = (
-            "QSlider::groove:horizontal { height:14px; background:#f3eee1; border:2px solid #3c3531; border-radius:8px; }"
-            "QSlider::sub-page:horizontal { background:#eec545; border:0; border-radius:6px; }"
-            "QSlider::add-page:horizontal { background:#f3eee1; border-radius:6px; }"
-            "QSlider::handle:horizontal { width:22px; margin:-6px 0; border:2px solid #3c3531; border-radius:11px;"
-            " background:qradialgradient(cx:0.32, cy:0.28, radius:0.9, stop:0 #e5c88d, stop:0.55 #b8874d, stop:1 #79512d); }"
-        )
-
-        for name, initial, setter in (
-            ("背景音乐", round(self.background_music._volume * 100), self.background_music.set_volume),
-            ("音效", round(self.sound_effects._volume * 100), self.sound_effects.set_volume),
+        description = QLabel("拖动滑块即可即时调整；设为 0% 可关闭对应音量。")
+        description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        description.setWordWrap(True)
+        description.setStyleSheet(f"color:{TEXT_COLOR};background:transparent;border:0;")
+        layout.addWidget(description)
+        for name, object_name, initial, setter in (
+            ("背景音乐", "backgroundMusicVolumeSlider", round(self.background_music._volume * 100), self.background_music.set_volume),
+            ("音效", "soundEffectsVolumeSlider", round(self.sound_effects._volume * 100), self.sound_effects.set_volume),
         ):
             row = QHBoxLayout()
+            row.setSpacing(12)
             label = QLabel(name)
-            label.setFixedWidth(78)
+            label.setMinimumWidth(84)
+            label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             label.setStyleSheet("background:transparent;border:0;font-weight:bold;")
             slider = QSlider(Qt.Orientation.Horizontal)
-            slider.setObjectName("volumeSlider")
+            slider.setObjectName(object_name)
             slider.setRange(0, 100)
             slider.setValue(initial)
-            slider.setStyleSheet(slider_style)
-            slider.setMinimumHeight(30)
+            slider.setStyleSheet(self.volume_slider_stylesheet())
+            slider.setMinimumSize(240, 36)
             amount = QLabel(f"{initial}%")
-            amount.setFixedWidth(44)
+            amount.setObjectName(f"{object_name}Value")
+            amount.setFixedWidth(52)
             amount.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             amount.setStyleSheet("background:transparent;border:0;")
             slider.valueChanged.connect(lambda value, value_label=amount, apply=setter: (value_label.setText(f"{value}%"), apply(value / 100)))
@@ -2052,9 +2191,11 @@ class MagicGemsQtApp(QMainWindow):
 
         layout.addStretch(1)
         close_button = QPushButton("完成")
+        close_button.setFixedSize(120, 44)
         close_button.clicked.connect(dialog.accept)
         layout.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
         self.style_popup_buttons(dialog)
+        dialog.setFixedSize(540, 330)
         dialog.exec()
 
     def show_game_rules(self) -> None:
@@ -2073,11 +2214,11 @@ class MagicGemsQtApp(QMainWindow):
         rules = (
             "每回合选择一项行动：领取资源、购买宠物，或预购一张市场宠物。",
             "领取资源：拿取三种不同属性零碎各1枚，或同种属性零碎（≥4）2枚。",
-            "购买宠物：支付零碎或贤者碎晶来购买卡片。已获得的宠物提供永久属性折扣和卡面分数；贤者碎晶可替代任意属性。",
+            "购买宠物：支付零碎或贤者碎晶来购买卡片。已获得的宠物提供永久属性折扣和卡面分数；贤者碎晶可替代任意属性。自己的回合中，可拖动已购买的双属性宠物卡到它的任一属性栏，调整当前折扣属性；购买时也可重新选择。",
             "预购宠物：从市场选择一张卡放置到预购区并获得1枚贤者碎晶；预购区最多3张；之后仍需花费行动购买预购的卡片。",
             "属性专精：2张触发第1次阶段一，3张触发第1次阶段二；之后每增加3张重复阶段一、阶段二（5/6张、8/9张……），双属性不计入。",
             "魔法师卡：折扣符合条件时，回合结束后自动获得，每张加3分。",
-            "胜利：任一玩家达到18分后立即结算；若公共市场全部耗尽，则完成本轮后结算。",
+            "胜利：任一玩家达到20分后，本轮继续至最后一名玩家结算完毕；最高分获胜，最高分并列则共同获胜。公共市场全部耗尽时也在本轮结束后结算。",
         )
         scroll = QScrollArea()
         scroll.setObjectName("gameRulesScroll")
@@ -2113,6 +2254,7 @@ class MagicGemsQtApp(QMainWindow):
         buttons.addWidget(close_button)
         layout.addLayout(buttons)
         self.style_popup_buttons(dialog)
+        dialog.setFixedSize(650, 560)
         dialog.exec()
 
     def show_specialization_rules(self) -> None:
@@ -2225,6 +2367,7 @@ class MagicGemsQtApp(QMainWindow):
         close_button.clicked.connect(dialog.accept)
         outer.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
         self.style_popup_buttons(dialog)
+        dialog.setFixedSize(dialog.size())
         dialog.exec()
 
     def build_ui(self, root: QWidget | None = None) -> None:
@@ -2863,7 +3006,13 @@ class MagicGemsQtApp(QMainWindow):
                 f"QPushButton {{ background:{ACTION_BUTTON_BACKGROUND}; color:{ACTION_BUTTON_TEXT_COLOR}; border:1px solid {PANEL_BORDER_COLOR}; padding:0; }}"
                 f"QPushButton:disabled {{ background:{BUTTON_DISABLED_COLOR}; color:{BUTTON_DISABLED_TEXT_COLOR}; border:1px solid {BUTTON_DISABLED_BORDER_COLOR}; padding:0; }}"
             )
-            for button, width in ((self.confirm_button, 111), (self.reserve_button, 112), (self.cancel_button, 111)):
+            card_actions.setSpacing(6)
+            card_actions.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            for button, width in (
+                (self.confirm_button, 104),
+                (self.reserve_button, 104),
+                (self.cancel_button, 104),
+            ):
                 button.setFixedSize(width, 27)
                 button.setStyleSheet(action_style)
                 card_actions.addWidget(button)
@@ -3419,6 +3568,11 @@ class MagicGemsQtApp(QMainWindow):
             layout.addWidget(button)
         self.style_popup_buttons(dialog)
         dialog.finished.connect(self.specialization_dialog_finished)
+        if cards:
+            dialog.setFixedSize(800, 700)
+        else:
+            dialog.adjustSize()
+            dialog.setFixedSize(dialog.size())
         dialog.exec()
 
     @staticmethod
@@ -3920,7 +4074,8 @@ class MagicGemsQtApp(QMainWindow):
             marker.setEnabled(not locked)
         settings_button = getattr(self, "settings_button", None)
         if settings_button is not None:
-            settings_button.setEnabled(not locked)
+            # 设置在动画和 AI 回合中仍可使用，不属于对局行动。
+            settings_button.setEnabled(True)
         for button in self.findChildren(QPushButton, "specializationHelpButton"):
             button.setEnabled(not locked)
         for card in self.findChildren(DraggableDualCard):
@@ -5146,6 +5301,8 @@ class MagicGemsQtApp(QMainWindow):
             "font-size:22px; font-weight:bold; padding:8px; }"
             f"QLabel#endGameWinner {{ color:{TEXT_COLOR}; background:transparent; border:0; "
             "font-size:20px; font-weight:bold; }"
+            f"QLabel#endGameMessage {{ color:{TEXT_COLOR}; background:transparent; border:0; "
+            "font-size:14px; }"
             f"QLabel#endGameScore {{ color:{TEXT_COLOR}; background:{HOVER_SURFACE_COLOR}; "
             f"border:1px solid {PANEL_BORDER_COLOR}; border-radius:{CARD_CORNER_RADIUS}px; "
             "font-size:13px; padding:8px; }"
@@ -5170,6 +5327,15 @@ class MagicGemsQtApp(QMainWindow):
         winner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         winner.setWordWrap(True)
         panel_layout.addWidget(winner)
+        victory_message = QLabel(
+            "在这片蕴含着无穷魔力的大陆上，你摘得了属于自己的璀璨宝石"
+            if len(winners) == 1
+            else "你们一起踏上冒险的征途，也最终一同戴上胜利的桂冠"
+        )
+        victory_message.setObjectName("endGameMessage")
+        victory_message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        victory_message.setWordWrap(True)
+        panel_layout.addWidget(victory_message)
         score = QLabel(winner_scores)
         score.setObjectName("endGameScore")
         score.setAlignment(Qt.AlignmentFlag.AlignCenter)
