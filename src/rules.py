@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import random
 
 from .models import ATTRIBUTES, Attribute, GameState, Market, PetCard, Player
-from .wizards import MAGICIAN_CARDS
+from .wizards import MAGICIAN_CARDS, WIZARD_MARKET_SIZE
 
 
 class RuleError(ValueError):
@@ -75,8 +75,9 @@ def payment_for(player: Player, card: PetCard, selected_dual: list[Attribute] | 
             f"资源不足：{card.display_name} 折扣后需要 {required_text}，当前为 {available_text}，"
             f"还需要贤者碎晶 {light_needed}，已有贤者碎晶 {player.light + player.temporary_light}"
         )
-    ordinary_light = min(player.light, light_needed)
-    return Payment(normal, ordinary_light, light_needed - ordinary_light)
+    temporary_light = min(player.temporary_light, light_needed)
+    ordinary_light = light_needed - temporary_light
+    return Payment(normal, ordinary_light, temporary_light)
 
 
 def _return_payment(state: GameState, payment: Payment) -> None:
@@ -170,13 +171,20 @@ def reserve_card(state: GameState, player: Player, card: PetCard) -> None:
     state.light_pool -= 1
 
 
-def create_state(players: list[Player], decks: dict[int, list[PetCard]], seed: int | None = None) -> GameState:
+def create_state(
+    players: list[Player],
+    decks: dict[int, list[PetCard]],
+    seed: int | None = None,
+    *,
+    rng: random.Random | None = None,
+) -> GameState:
     market_cards = {level: [decks[level].pop() for _ in range(min(5, len(decks[level])))] for level in (1, 2, 3)}
-    rng = random.Random(seed)
+    rng = rng if rng is not None else random.Random(seed)
     wizard_deck = list(MAGICIAN_CARDS)
     rng.shuffle(wizard_deck)
-    wizard_market = wizard_deck[:3]
-    wizard_deck = wizard_deck[3:]
+    wizard_market = wizard_deck[:WIZARD_MARKET_SIZE]
+    # 开局仅公开三张，其余保留在本局牌堆，供获得魔法师卡后补位。
+    wizard_deck = wizard_deck[WIZARD_MARKET_SIZE:]
     return GameState(
         players,
         {attribute: 7 for attribute in ATTRIBUTES},

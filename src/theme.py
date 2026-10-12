@@ -72,6 +72,7 @@ SAGE_TEXT_COLOR = "#9b742c"  # 玩家状态中贤者碎晶数量的文字色。
 
 # 资源变化及卡片受影响时显示的动画浮层配色。
 RESOURCE_POPUP_BACKGROUND = "#ffffff"  # 普通资源变化提示框的白色背景。
+RESOURCE_LOSS_POPUP_BACKGROUND = "#f8dddd"  # 玩家失去资源时提示框的淡红色背景。
 RESOURCE_POPUP_TEXT_COLOR = "#333333"  # 普通资源变化提示框的文字色。
 RESOURCE_POPUP_BORDER_COLOR = "#c8c8c8"  # 普通资源变化提示框的灰色边框。
 SAGE_POPUP_BACKGROUND = "#fff1b8"  # 只显示贤者碎晶变化时的淡金色背景。
@@ -116,4 +117,13 @@ ATTRIBUTE_ICON_FILES = {
     Attribute.GRASS: "草系图标.png",  # 卡片和界面中的草属性标识图。
     Attribute.CUTE: "萌系图标.png",  # 卡片和界面中的萌属性标识图。
     Attribute.DARK: "恶系图标.png",  # 卡片和界面中的恶属性标识图。
+}
+
+ATTRIBUTE_ICON_MASK_DIR = "属性图标/原图"  # 用于属性效果渐变遮罩的原始图标目录。
+ATTRIBUTE_ICON_MASK_FILES = {
+    Attribute.WATER: "水系.jpg",  # 水属性渐变遮罩原图。
+    Attribute.FIRE: "火系.jpg",  # 火属性渐变遮罩原图。
+    Attribute.GRASS: "草系.jpg",  # 草属性渐变遮罩原图。
+    Attribute.CUTE: "萌系.jpg",  # 萌属性渐变遮罩原图。
+    Attribute.DARK: "恶系.jpg",  # 恶属性渐变遮罩原图。
 }

@@ -204,11 +204,10 @@ def resolve_specialization(
 
     if (attribute, stage) == (Attribute.GRASS, 2):
         grass_cards = sum(
-            single_attribute_count(other, Attribute.GRASS)
-            for index, other in enumerate(state.players)
-            if index != effect.player_index
+            single_attribute_count(owner, Attribute.GRASS)
+            for owner in state.players
         )
-        gained = grass_cards + 1
+        gained = grass_cards
         player.temporary_light += gained
         return f"{name}：{player.name} 获得 {gained} 枚临时贤者碎晶"
 
@@ -218,26 +217,55 @@ def resolve_specialization(
 
     if (attribute, stage) == (Attribute.CUTE, 2):
         changed: list[str] = []
+        unchanged_zero: list[str] = []
+        unavailable: list[str] = []
         immune: list[str] = []
         for index, owner in enumerate(state.players):
             if index == effect.player_index:
                 continue
-            if not owner.purchased:
+            # 优先从未萌化的3级卡中选；没有时才退到未萌化的2级卡。
+            # 1级卡和已萌化卡不参与选择。
+            level_three = [
+                card for card, _ in owner.purchased
+                if card.level == 3 and not card.cuteified
+            ]
+            level_two = [
+                card for card, _ in owner.purchased
+                if card.level == 2 and not card.cuteified
+            ]
+            eligible = level_three or level_two
+            if not eligible:
+                unavailable.append(owner.name)
                 continue
             blocked = _apply_attack_immunity(player, owner, name)
             if blocked:
                 immune.append(owner.name)
                 continue
-            highest_level = max(card.level for card, _ in owner.purchased)
-            eligible = [card for card, _ in owner.purchased if card.level == highest_level]
+            highest_level = max(card.level for card in eligible)
+            eligible = [card for card in eligible if card.level == highest_level]
             chosen = state.rng.choice(eligible)
             old_score = chosen.effective_score
+            if old_score == 0:
+                unchanged_zero.append(
+                    f"{owner.name}:{chosen.display_name}（{highest_level}级）原本0分，未萌化"
+                )
+                continue
             chosen.score = 0
+            chosen.cuteified = True
             owner.score -= old_score
             changed.append(f"{owner.name}:{chosen.display_name}（{highest_level}级）{old_score}分→0分")
-        detail = "；".join(changed) if changed else "其他玩家没有可影响的已购宠物"
-        immune_detail = f"；{'、'.join(immune)}免疫了攻击" if immune else ""
-        return f"{name}：各自最高级宠物分数归零：{detail}{immune_detail}"
+        details = []
+        if changed:
+            details.append("已萌化：" + "；".join(changed))
+        if unchanged_zero:
+            details.append("选中原本0分卡（未改变且未标记萌化）：" + "；".join(unchanged_zero))
+        if unavailable:
+            details.append("没有可萌化的2级或3级卡：" + "、".join(unavailable))
+        if immune:
+            details.append("免疫了攻击：" + "、".join(immune))
+        if not details:
+            details.append("没有可萌化的2级或3级卡")
+        return f"{name}：3级优先、否则2级中随机萌化；{'；'.join(details)}"
 
     if (attribute, stage) == (Attribute.DARK, 1):
         legal_players = legal_player_targets(state, effect)

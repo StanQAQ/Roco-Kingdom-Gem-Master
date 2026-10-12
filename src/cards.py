@@ -159,8 +159,12 @@ def all_cards() -> list[PetCard]:
     return cards
 
 
-def build_decks(seed: int | None = None) -> dict[int, list[PetCard]]:
-    randomizer = random.Random(seed)
+def build_decks(
+    seed: int | None = None,
+    *,
+    rng: random.Random | None = None,
+) -> dict[int, list[PetCard]]:
+    randomizer = rng if rng is not None else random.Random(seed)
     decks = {level: [card for card in all_cards() if card.level == level] for level in (1, 2, 3)}
     for deck in decks.values():
         randomizer.shuffle(deck)

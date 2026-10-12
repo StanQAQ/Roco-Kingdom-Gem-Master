@@ -57,6 +57,8 @@ def _wizard_bonus(player: Player, card: PetCard, game: Game) -> float:
     value = 0.0
     owned_wizard_ids = {owned.card_id for owned in player.wizard_cards}
     for wizard in game.state.wizard_market:
+        if wizard is None:
+            continue
         if wizard.card_id in owned_wizard_ids:
             continue
         requirements = dict(wizard.requirements)

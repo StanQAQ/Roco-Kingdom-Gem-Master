@@ -26,6 +26,8 @@ class Game:
     def execute(self, action: Action) -> list[str]:
         if self.state.finished:
             raise RuleError("对局已经结束")
+        # CLI/模拟等非 Qt 调用也会在新回合第一次处理行动前补齐待补的魔法师牌位。
+        self.begin_turn()
         if self.state.pending_specializations:
             if action.kind != "specialization":
                 raise RuleError("必须先结算当前属性专精效果")
@@ -88,6 +90,16 @@ class Game:
             messages.extend(self._finish_turn())
         return messages
 
+    def begin_turn(self) -> list:
+        """在新回合开始时按原牌位补入魔法师卡，并返回补入的卡片。"""
+        refilled = []
+        for index, wizard in enumerate(self.state.wizard_market):
+            if wizard is None and self.state.wizard_deck:
+                replacement = self.state.wizard_deck.pop(0)
+                self.state.wizard_market[index] = replacement
+                refilled.append(replacement)
+        return refilled
+
     def _finish_turn(self) -> list[str]:
         player = self.state.current()
         acquired_wizards = award_eligible_wizard_cards(player, self.state.wizard_market)
@@ -95,24 +107,31 @@ class Game:
         for wizard in acquired_wizards:
             wizard_index = next(
                 index for index, available in enumerate(self.state.wizard_market)
-                if available.card_id == wizard.card_id
+                if available is not None and available.card_id == wizard.card_id
             )
-            self.state.wizard_market.pop(wizard_index)
-            if self.state.wizard_deck:
-                self.state.wizard_market.append(self.state.wizard_deck.pop(0))
+            # 领取后保留固定牌位为空；替补卡等下一回合开始时再补入。
+            self.state.wizard_market[wizard_index] = None
         market_exhausted = not any(self.state.market.cards[level] for level in (1, 2, 3))
         if any(player.score >= VICTORY_SCORE for player in self.state.players):
             self.state.end_triggered = True
         if market_exhausted:
             self.state.end_triggered = True
+            self.state.market_exhausted_triggered = True
         self.state.next_player()
-        # 达到胜利分数后完成当前整轮，让本轮剩余玩家仍有一次行动机会。
+        # 只有整轮结束时才结算。达标玩家若在本轮后续行动中失去分数，
+        # 不具备获胜资格；若市场也未耗尽，则清除终局标记并继续游戏。
         if self.state.end_triggered and self.state.current_player == 0:
-            self.state.finished = True
+            has_eligible_winner = any(player.score >= VICTORY_SCORE for player in self.state.players)
+            self.state.finished = has_eligible_winner or self.state.market_exhausted_triggered
+            if not self.state.finished:
+                self.state.end_triggered = False
         if not self.state.finished:
             refill_market(self.state)
         return messages
 
     def winners(self) -> list[Player]:
-        highest = max(player.score for player in self.state.players)
-        return [player for player in self.state.players if player.score == highest]
+        eligible = [player for player in self.state.players if player.score >= VICTORY_SCORE]
+        if not eligible:
+            return []
+        highest = max(player.score for player in eligible)
+        return [player for player in eligible if player.score == highest]

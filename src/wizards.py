@@ -5,6 +5,9 @@ from collections import Counter
 from .models import Attribute, Player, WizardCard
 
 
+WIZARD_MARKET_SIZE = 3  # 每局开局公开的魔法师卡数量；获得后从剩余牌堆补充。
+
+
 MAGICIAN_CARDS = (
     WizardCard("萌萌", ((Attribute.CUTE, 4), (Attribute.GRASS, 4)), card_id="W01"),
     WizardCard("格里芬", ((Attribute.FIRE, 4), (Attribute.WATER, 4)), card_id="W02"),
@@ -19,7 +22,10 @@ MAGICIAN_CARDS = (
 )
 
 
-def award_eligible_wizard_cards(player: Player, available_wizards: list[WizardCard]) -> list[WizardCard]:
+def award_eligible_wizard_cards(
+    player: Player,
+    available_wizards: list[WizardCard | None],
+) -> list[WizardCard]:
     """Award the leftmost eligible card, at most one per turn."""
     attribute_counts: Counter[Attribute] = Counter()
     for pet, _chosen_attribute in player.purchased:
@@ -27,6 +33,8 @@ def award_eligible_wizard_cards(player: Player, available_wizards: list[WizardCa
 
     owned_wizard_ids = {wizard.card_id for wizard in player.wizard_cards}
     for wizard in tuple(available_wizards):
+        if wizard is None:
+            continue
         if wizard.card_id in owned_wizard_ids:
             continue
         if all(attribute_counts[attribute] >= amount for attribute, amount in wizard.requirements):

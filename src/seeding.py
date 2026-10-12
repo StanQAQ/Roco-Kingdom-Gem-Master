@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import secrets
 from collections.abc import Callable
 
@@ -8,8 +9,15 @@ MAX_SEED = 2**32 - 1
 
 
 def generate_random_seed() -> int:
-    """生成可显示、可复现的 32 位随机种子。"""
+    """生成用于标识随机对局的 32 位编号。"""
     return secrets.randbelow(MAX_SEED + 1)
+
+
+def create_rng(seed: int, mode: str) -> random.Random:
+    """固定模式可复现；随机模式使用操作系统密码学随机源。"""
+    if mode == "random":
+        return random.SystemRandom()
+    return random.Random(seed)
 
 
 def prompt_for_seed(input_func: Callable[[str], str] = input) -> tuple[int, str]:
@@ -40,5 +48,6 @@ def select_seed(fixed_seed: int | None, random_requested: bool, *, default_rando
 
 
 def seed_description(seed: int, mode: str) -> str:
-    label = "随机" if mode == "random" else "固定"
-    return f"{label}种子：{seed}"
+    if mode == "random":
+        return f"随机局编号：{seed}（随机结果不可由编号推算）"
+    return f"固定种子：{seed}"
