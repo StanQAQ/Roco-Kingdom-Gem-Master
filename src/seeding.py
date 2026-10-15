@@ -49,5 +49,5 @@ def select_seed(fixed_seed: int | None, random_requested: bool, *, default_rando
 
 def seed_description(seed: int, mode: str) -> str:
     if mode == "random":
-        return f"随机局编号：{seed}（随机结果不可由编号推算）"
+        return f"随机局编号：{seed}"
     return f"固定种子：{seed}"

@@ -35,18 +35,21 @@ except (ImportError, OSError) as error:  # Qt Multimedia can be present but miss
     QSoundEffect = None
     QT_MULTIMEDIA_IMPORT_ERROR = str(error)
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout,
+    QAbstractButton, QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout,
     QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
-    QLabel, QMainWindow, QMessageBox, QPushButton, QScrollArea, QTextEdit,
+    QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea, QTextEdit,
     QSizePolicy, QSlider, QStackedWidget, QStyle, QStyleOptionButton, QStylePainter, QVBoxLayout, QWidget,
 )
 from PySide6.QtCore import QUrl
 
 from .ai import choose_action
+from .achievement_definitions import ACHIEVEMENTS, ACHIEVEMENTS_BY_DIFFICULTY
+from .achievement_tracker import AchievementTracker, sync_profile_achievements
 from .deepseek_ai import DeepSeekOpponent
 from .cards import build_decks, name_for_card_id
 from .game import Action, Game
 from .models import ATTRIBUTES, Attribute, PetCard, Player, SpecializationEffect
+from .profile import PlayerProfile, ProfileError, ProfileStore
 from .rules import RuleError, create_state, payment_for
 from .seeding import create_rng, generate_random_seed, seed_description
 from .specializations import STAGE_NAMES, legal_card_targets, legal_player_targets, single_attribute_count, specialization_name
@@ -77,9 +80,11 @@ from .theme import (
     TURN_STATUS_BACKGROUND,
     PARCHMENT_FLECK_RGB,
     PARCHMENT_FLECK_ALPHA_BASE, PARCHMENT_FLECK_ALPHA_VARIATION, TRANSPARENT_RGBA,
-    TEXT_COLOR, TITLE_SHADOW_COLOR, TITLE_SUBTITLE_COLOR, TITLE_TEXT_COLOR,
+    TEXT_COLOR, TITLE_SHADOW_COLOR, TITLE_SUBTITLE_COLOR, TITLE_TEXT_COLOR, PROFILE_ERROR_COLOR,
     UI_FONT_FAMILIES, BUTTON_DISABLED_BORDER_COLOR, BUTTON_DISABLED_COLOR,
     BUTTON_DISABLED_TEXT_COLOR, BUTTON_HOVER_COLOR, BUTTON_PRESSED_COLOR,
+    ACHIEVEMENT_LOCKED_BACKGROUND, ACHIEVEMENT_RARITY_COLORS,
+    ACHIEVEMENT_LOCKED_RARITY_COLORS,
     WIZARD_CARD_BORDER_COLOR, WIZARD_CARD_TEXT_COLOR,
     WIZARD_NOTICE_BACKGROUND, WIZARD_NOTICE_TEXT_COLOR,
     RESOURCE_COLORS as ATTRIBUTE_COLORS,
@@ -675,6 +680,47 @@ class AnimationOverlayFrame(QFrame):
         self.animationGeometryChanged.emit(geometry)
 
 
+class AchievementToast(QFrame):
+    """不透明的成就提示卡片；仅移动位置，不使用透明度特效以避免残影。"""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("achievementToast")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setFixedSize(330, 92)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(3)
+        self.title_label = QLabel("成就已解锁")
+        self.title_label.setObjectName("achievementToastTitle")
+        self.name_label = QLabel()
+        self.name_label.setObjectName("achievementToastName")
+        self.name_label.setWordWrap(True)
+        self.name_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.name_label, 1)
+        self.set_accent_color(ORNAMENT_ACCENT_COLOR)
+
+    def set_accent_color(self, color: str) -> None:
+        """按成就稀有度同步调整提示框边线与标题颜色。"""
+        self.setStyleSheet(
+            f"QFrame#achievementToast {{ background:{TEXT_COLOR}; "
+            f"border:2px solid {color}; border-radius:8px; }}"
+            f"QLabel#achievementToastTitle {{ color:{color}; "
+            "background:transparent; border:0; font-size:11px; font-weight:bold; }"
+            f"QLabel#achievementToastName {{ color:{PANEL_COLOR}; "
+            "background:transparent; border:0; font-size:16px; font-weight:bold; }"
+        )
+
+    def set_achievement(self, definition) -> None:
+        """根据见习、中级或高级稀有度设置提示内容和强调色。"""
+        accent = ACHIEVEMENT_RARITY_COLORS.get(definition.rarity, ORNAMENT_ACCENT_COLOR)
+        self.set_accent_color(accent)
+        self.title_label.setText(f"{definition.rarity}成就达成")
+        self.name_label.setText(definition.name)
+
+
 class TurnBannerOverlay(QWidget):
     """固定文字位置、只改变背景尺寸的回合提示浮层。"""
 
@@ -805,6 +851,9 @@ class AnimationStage(QWidget):
         self.setGeometry(self.parentWidget().rect())
         self.show()
         self.raise_()
+        toast = getattr(self.parentWidget(), "achievement_toast", None)
+        if toast is not None and toast.isVisible():
+            toast.raise_()
         self.update()
 
     def request_background_refresh(self) -> None:
@@ -1015,6 +1064,138 @@ class BaroqueTitlePage(QWidget):
         self.draw_corner(painter, self.width() - 27, self.height() - 27, -1, -1)
 
 
+class TitleMenuButton(QAbstractButton):
+    """标题页按钮不使用系统 PushButton 外观，避免原生焦点环与边框残留。"""
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setText(text)
+        self._hovered = False
+        # 每次绘制覆盖整个按钮，切页或改变悬停状态时不叠加系统背景。
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
+        # 导航按钮不保留原生键盘焦点，避免 macOS 焦点重绘和自绘悬停边框叠加闪烁。
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def paintEvent(self, _event) -> None:
+        pressed = self.isDown()
+        accent = pressed or self._hovered
+        border = ORNAMENT_ACCENT_COLOR if accent else PANEL_BORDER_COLOR
+        background = ORNAMENT_ACCENT_COLOR if pressed else PANEL_COLOR
+        painter = QPainter(self)
+        # 尺寸和位置已对齐设备像素，使用普通不透明覆盖即可避免边缘残帧。
+        painter.fillRect(self.rect(), QColor(border))
+        painter.fillRect(self.rect().adjusted(2, 2, -2, -2), QColor(background))
+        painter.setPen(QColor(TEXT_COLOR))
+        painter.setFont(self.font())
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
+
+    def enterEvent(self, event) -> None:
+        super().enterEvent(event)
+        if not self._hovered:
+            self._hovered = True
+            self.repaint()
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        if self._hovered:
+            self._hovered = False
+            self.repaint()
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        # clicked 槽使用队列连接；先同步画回松开状态，再处理页面内容变化。
+        self.repaint()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._hovered = False
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # 父窗口的全局 QSS 在 polish 时会清除此标记，显示后重新设定。
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        QTimer.singleShot(0, self._align_to_device_pixels)
+
+    def _align_to_device_pixels(self) -> None:
+        """把控件左上角吸附到物理像素，避免 1.25 倍缩放产生半像素边缘。"""
+        if not self.isVisible():
+            return
+        ratio = self.devicePixelRatioF()
+        origin = self.mapTo(self.window(), QPoint(0, 0))
+
+        def correction(value: int) -> int:
+            return min(
+                range(-3, 4),
+                key=lambda delta: (
+                    abs((value + delta) * ratio - round((value + delta) * ratio)),
+                    abs(delta),
+                ),
+            )
+
+        offset = QPoint(correction(origin.x()), correction(origin.y()))
+        if not offset.isNull():
+            self.move(self.pos() + offset)
+
+
+class ProfileErrorNotice(QWidget):
+    """完整自绘登录错误提示，避免透明标签在 macOS 上留下脏区边线。"""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._text = ""
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+    def setText(self, text: str) -> None:
+        if text == self._text:
+            return
+        self._text = text
+        self.update()
+
+    def clear(self) -> None:
+        self.setText("")
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(TABLETOP_COLOR))
+        if not self._text:
+            return
+        font = QFont(self.font())
+        font.setPixelSize(13)
+        painter.setFont(font)
+        painter.setPen(QColor(PROFILE_ERROR_COLOR))
+        painter.drawText(
+            self.rect().adjusted(4, 2, -4, -2),
+            Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
+            self._text,
+        )
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        QTimer.singleShot(0, self._align_to_device_pixels)
+
+    def _align_to_device_pixels(self) -> None:
+        """错误提示更新频繁，同样需要避开半物理像素边界。"""
+        if not self.isVisible():
+            return
+        ratio = self.devicePixelRatioF()
+        origin = self.mapTo(self.window(), QPoint(0, 0))
+
+        def correction(value: int) -> int:
+            return min(
+                range(-3, 4),
+                key=lambda delta: (
+                    abs((value + delta) * ratio - round((value + delta) * ratio)),
+                    abs(delta),
+                ),
+            )
+
+        offset = QPoint(correction(origin.x()), correction(origin.y()))
+        if not offset.isNull():
+            self.move(self.pos() + offset)
+
+
 class SoundEffects:
     """Keep WAV assets loaded for low-latency, overlapping playback."""
 
@@ -1218,7 +1399,7 @@ class SoundEffects:
 class BackgroundMusic:
     """在对局期间循环播放随游戏打包的背景音乐。"""
 
-    VOLUME = 0.8
+    VOLUME = 0.5
 
     def __init__(self) -> None:
         self._music_path = runtime_resource_root() / "media" / "audio" / "魔法之匙.mp3"
@@ -2087,6 +2268,8 @@ class MagicGemsQtApp(QMainWindow):
     # 在 100% 系统缩放的屏幕上显示为 1500×1000，所有控件、字体和弹窗同步放大。
     UI_SCALE_FACTOR = 1.25
     WINDOW_WIDTH, WINDOW_HEIGHT = 1200, 800
+    # 取 4 的倍数，确保 1.25 倍及 macOS Retina 2.5 倍绘制时边缘落在完整设备像素上。
+    TITLE_MENU_BUTTON_WIDTH = 232  # 登录、首页、难度和规则页面的统一按钮宽度。
     CARD_WIDTH = 75
     SINGLE_PLAYER_OPPONENTS = {
         "simple": ("米米", "米莎", "米蒂"),
@@ -2102,6 +2285,7 @@ class MagicGemsQtApp(QMainWindow):
         self, seed: int | None = 1, ai_battle: bool = False, interval: float = .5,
         seed_mode: str = "fixed", deepseek_player: int | None = None,
         deepseek_opponents: dict[int, DeepSeekOpponent] | None = None, deepseek_all: bool = False,
+        profile_store: ProfileStore | None = None,
     ) -> None:
         super().__init__()
         # 四 AI 模式在启动时已经由命令行明确选定，因此可以立即开局取种子。
@@ -2131,6 +2315,11 @@ class MagicGemsQtApp(QMainWindow):
         self.deepseek_future = None
         self.deepseek_game = None
         self.ai_difficulty = "hard"
+        self.profile_store = profile_store if profile_store is not None else ProfileStore()
+        self.active_profile: PlayerProfile | None = None
+        self.achievement_tracker: AchievementTracker | None = None
+        self.achievement_toast_queue = []
+        self.achievement_toast_animation: QSequentialAnimationGroup | None = None
         deck_rng = create_rng(self.seed, self.seed_mode)
         state_rng = create_rng(self.seed, self.seed_mode)
         self.game = Game(create_state(self.create_players(), build_decks(rng=deck_rng), self.seed, rng=state_rng))
@@ -2208,10 +2397,20 @@ class MagicGemsQtApp(QMainWindow):
         )
         self.pages = QStackedWidget(self)
         self.setCentralWidget(self.pages)
+        self.profile_page = self.build_profile_page()
+        self.pages.addWidget(self.profile_page)
         self.title_page = self.build_title_page()
         self.pages.addWidget(self.title_page)
         self.difficulty_page = self.build_difficulty_page()
         self.pages.addWidget(self.difficulty_page)
+        self.title_rules_menu_page = self.build_title_rules_menu_page()
+        self.pages.addWidget(self.title_rules_menu_page)
+        self.title_rules_page = self.build_title_rules_page()
+        self.pages.addWidget(self.title_rules_page)
+        self.title_specialization_page = self.build_title_specialization_page()
+        self.pages.addWidget(self.title_specialization_page)
+        self.title_settings_page = self.build_title_settings_page()
+        self.pages.addWidget(self.title_settings_page)
         self.game_page = WoodTableWidget()
         self.game_page.setObjectName("gamePage")
         self.pages.addWidget(self.game_page)
@@ -2221,6 +2420,8 @@ class MagicGemsQtApp(QMainWindow):
         self._animation_sources.hide()
         self.animation_stage = AnimationStage(self)
         self.animation_stage.setGeometry(self.rect())
+        self.achievement_toast = AchievementToast(self)
+        self.achievement_toast.hide()
         self.player_hover_card = PlayerStatusHoverCard(self)
         self.player_hover_card.installEventFilter(self)
         # Child widgets become visible with the main window unless explicitly
@@ -2232,7 +2433,7 @@ class MagicGemsQtApp(QMainWindow):
         self.player_hover_hide_timer.timeout.connect(self.hide_player_status_hover)
         self.player_hover_anchor: QWidget | None = None
         self.game_started = self.ai_battle
-        self.pages.setCurrentWidget(self.game_page if self.ai_battle else self.title_page)
+        self.pages.setCurrentWidget(self.game_page if self.ai_battle else self.profile_page)
         self.refresh()
         if self.ai_battle:
             self.background_music.start()
@@ -2379,20 +2580,13 @@ class MagicGemsQtApp(QMainWindow):
             layout.addLayout(header)
         return frame, layout
 
-    def build_title_page(self) -> QWidget:
-        page = BaroqueTitlePage()
-        page.setObjectName("titlePage")
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(92, 76, 92, 76)
-        layout.setSpacing(0)
-        layout.addStretch(2)
-
+    def add_title_branding(self, layout: QVBoxLayout, subtitle_text: str, title_name: str) -> None:
+        """账号页与首页共用同一套标题字体、投影和装饰间距。"""
         title = QLabel("洛克王国：魔法宝石")
-        title.setObjectName("gameTitle")
+        title.setObjectName(title_name)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"color:{TITLE_TEXT_COLOR};background:transparent;border:0;")
-        retro_family = self.ui_font_family
-        title_font = QFont(retro_family)
+        title_font = QFont(self.ui_font_family)
         title_font.setPointSize(54)
         title_font.setBold(True)
         title_font.setStyleHint(QFont.StyleHint.Serif)
@@ -2405,35 +2599,149 @@ class MagicGemsQtApp(QMainWindow):
         title.setGraphicsEffect(title_shadow)
         layout.addWidget(title)
 
-        subtitle = QLabel("—— 经典策略桌游 · 四人对战 ——")
+        subtitle = QLabel(subtitle_text)
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet(f"color:{TITLE_SUBTITLE_COLOR};background:transparent;border:0;font-size:15px;font-weight:bold;letter-spacing:2px;")
-        subtitle_font = QFont(retro_family)
+        subtitle.setStyleSheet(
+            f"color:{TITLE_SUBTITLE_COLOR};background:transparent;border:0;font-size:15px;font-weight:bold;letter-spacing:2px;"
+        )
+        subtitle_font = QFont(self.ui_font_family)
         subtitle_font.setPointSize(15)
         subtitle.setFont(subtitle_font)
         layout.addSpacing(12)
         layout.addWidget(subtitle)
+
+    def build_profile_page(self) -> QWidget:
+        """在与首页一致的巴洛克主窗口中选择或创建本机玩家档案。"""
+        page = BaroqueTitlePage()
+        page.setObjectName("profilePage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(92, 76, 92, 76)
+        layout.setSpacing(0)
+        layout.addStretch(2)
+        # 保留原副标题所在的垂直位置，只显示一行档案标题。
+        layout.addSpacing(90)
+        title = QLabel("创建属于你的冒险档案")
+        title.setObjectName("profilePageTitle")
+        title.setFixedHeight(60)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_font = QFont(self.ui_font_family)
+        title_font.setPointSize(36)
+        title_font.setBold(True)
+        title.setFont(title_font)
+        title.setStyleSheet(f"color:{TITLE_TEXT_COLOR};background:transparent;border:0;")
+        title_shadow = QGraphicsDropShadowEffect(title)
+        title_shadow.setBlurRadius(5)
+        title_shadow.setOffset(1, 2)
+        title_shadow.setColor(QColor(TITLE_SHADOW_COLOR))
+        title.setGraphicsEffect(title_shadow)
+        layout.addWidget(title)
+        layout.addSpacing(40)
+
+        prompt = QLabel("输入玩家昵称")
+        prompt.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        prompt.setStyleSheet(
+            f"color:{TITLE_SUBTITLE_COLOR};background:transparent;border:0;font-size:17px;font-weight:bold;"
+        )
+        layout.addWidget(prompt)
+        layout.addSpacing(18)
+
+        self.profile_nickname_input = QLineEdit()
+        self.profile_nickname_input.setObjectName("profileNicknameInput")
+        self.profile_nickname_input.setPlaceholderText("请输入玩家昵称")
+        self.profile_nickname_input.setMaxLength(32)
+        self.profile_nickname_input.setFixedSize(352, 48)
+        self.profile_nickname_input.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+        self.profile_nickname_input.setStyleSheet(
+            f"QLineEdit {{ color:{TEXT_COLOR}; background:{PANEL_COLOR}; "
+            f"border:2px solid {PANEL_BORDER_COLOR}; border-radius:8px; "
+            f"padding:4px 12px; font-size:17px; }}"
+            f"QLineEdit:focus {{ border-color:{ORNAMENT_ACCENT_COLOR}; }}"
+        )
+        self.profile_nickname_input.returnPressed.connect(self.enter_profile)
+        layout.addWidget(self.profile_nickname_input, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addSpacing(14)
+
+        self.profile_enter_button = TitleMenuButton("进入游戏")
+        self.profile_enter_button.setObjectName("profileEnterButton")
+        self.profile_enter_button.setFixedSize(self.TITLE_MENU_BUTTON_WIDTH, 44)
+        button_font = QFont(self.ui_font_family)
+        button_font.setPointSize(15)
+        button_font.setBold(True)
+        self.profile_enter_button.setFont(button_font)
+        # 延后到鼠标释放事件结束后校验，避免错误提示与按钮按下帧同时提交造成闪烁。
+        self.profile_enter_button.clicked.connect(
+            self.enter_profile,
+            type=Qt.ConnectionType.QueuedConnection,
+        )
+        layout.addWidget(self.profile_enter_button, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self.profile_error_label = ProfileErrorNotice()
+        self.profile_error_label.setObjectName("profileErrorLabel")
+        self.profile_error_label.setFixedHeight(48)
+        self.profile_error_label.setFixedWidth(352)
+        layout.addWidget(self.profile_error_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch(3)
+        return page
+
+    def enter_profile(self) -> None:
+        """用昵称载入既有档案，或创建一个新档案后进入标题页。"""
+        try:
+            profile, _created = self.profile_store.load_or_create(self.profile_nickname_input.text())
+        except ProfileError as error:
+            # 登录按钮不接收焦点，因此空昵称点击后输入框仍会保留闪烁光标。
+            # 清除焦点可停止持续的原生光标重绘，并避免与下方提示更新争用窗口脏区。
+            self.profile_nickname_input.clearFocus()
+            self.profile_error_label.setText(str(error))
+            return
+        self.active_profile = profile
+        self.profile_error_label.clear()
+        achievement_error = sync_profile_achievements(profile, self.profile_store)
+        self.title_settings_profile_label.setText(f"当前玩家：{profile.nickname}")
+        self.pages.setCurrentWidget(self.title_page)
+        if achievement_error:
+            self.show_themed_message(
+                QMessageBox.Icon.Warning, "成就档案未能更新", achievement_error,
+                QMessageBox.StandardButton.Ok,
+            )
+
+    def logout_profile(self) -> None:
+        """从首页设置退出当前账号，但保留其本机档案供再次登录。"""
+        if self.pages.currentWidget() is not self.title_settings_page:
+            return
+        self.active_profile = None
+        self.achievement_tracker = None
+        self.title_settings_profile_label.setText("当前玩家：未登录")
+        self.profile_nickname_input.clear()
+        self.profile_error_label.clear()
+        self.pages.setCurrentWidget(self.profile_page)
+        self.profile_nickname_input.setFocus()
+
+    def build_title_page(self) -> QWidget:
+        page = BaroqueTitlePage()
+        page.setObjectName("titlePage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(92, 76, 92, 76)
+        layout.setSpacing(0)
+        layout.addStretch(2)
+
+        retro_family = self.ui_font_family
+        self.add_title_branding(layout, "—— 经典策略桌游 · 四人对战 ——", "gameTitle")
         layout.addSpacing(68)
 
         button_font = QFont(retro_family)
         button_font.setPointSize(15)
         button_font.setBold(True)
         options = (
-            ("单人模式", "titleSinglePlayerButton", self.start_single_player),
-            ("规则介绍", "titleRulesButton", self.show_game_rules),
+            ("开始游戏", "titleSinglePlayerButton", self.start_single_player),
+            ("规则介绍", "titleRulesButton", self.show_title_rules_menu_page),
+            ("设置", "titleSettingsButton", self.show_title_settings_page),
             ("退出游戏", "titleQuitButton", self.close),
         )
         for label, object_name, callback in options:
-            button = QPushButton(label)
+            button = TitleMenuButton(label)
             button.setObjectName(object_name)
-            button.setFixedSize(350, 44)
+            button.setFixedSize(self.TITLE_MENU_BUTTON_WIDTH, 44)
             button.setFont(button_font)
-            button.setStyleSheet(
-                f"QPushButton {{ color:{TEXT_COLOR}; border:2px solid {PANEL_BORDER_COLOR}; padding:3px 16px; "
-                f"background:{PANEL_COLOR}; }}"
-                f"QPushButton:hover {{ border-color:{ORNAMENT_ACCENT_COLOR}; }}"
-                f"QPushButton:pressed {{ background:{ORNAMENT_ACCENT_COLOR}; border-color:{ORNAMENT_ACCENT_COLOR}; }}"
-            )
             button.clicked.connect(callback)
             layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
             layout.addSpacing(12)
@@ -2445,7 +2753,8 @@ class MagicGemsQtApp(QMainWindow):
         page = BaroqueTitlePage()
         page.setObjectName("difficultyPage")
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(92, 76, 92, 76)
+        # 返回首页与规则、设置页面共用底部 55px 的定位基线。
+        layout.setContentsMargins(92, 76, 92, 55)
         layout.setSpacing(0)
         layout.addStretch(2)
 
@@ -2469,36 +2778,361 @@ class MagicGemsQtApp(QMainWindow):
             ("困难模式","difficultyHardButton", "hard"),
         )
         for label, object_name, difficulty in options:
-            button = QPushButton(f"{label}")
+            button = TitleMenuButton(label)
             button.setObjectName(object_name)
-            button.setFixedSize(350, 44)
+            button.setFixedSize(self.TITLE_MENU_BUTTON_WIDTH, 44)
             button.setFont(difficulty_font)
-            button.setStyleSheet(
-                f"QPushButton {{ color:{TEXT_COLOR}; border:2px solid {PANEL_BORDER_COLOR}; padding:3px 16px; "
-                f"background:{PANEL_COLOR}; }}"
-                f"QPushButton:hover {{ border-color:{ORNAMENT_ACCENT_COLOR}; }}"
-                f"QPushButton:pressed {{ background:{ORNAMENT_ACCENT_COLOR}; border-color:{ORNAMENT_ACCENT_COLOR}; }}"
-            )
             button.clicked.connect(lambda _checked=False, mode=difficulty: self.start_game_with_difficulty(mode))
             layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
             layout.addSpacing(12)
 
-        back = QPushButton("返回")
+        back = TitleMenuButton("返回首页")
         back.setObjectName("difficultyBackButton")
-        back.setFixedSize(160, 40)
+        back.setFixedSize(self.TITLE_MENU_BUTTON_WIDTH, 44)
         back.setFont(difficulty_font)
-        back.setStyleSheet(
-            f"QPushButton {{ color:{TEXT_COLOR}; border:1px solid {PANEL_BORDER_COLOR}; padding:3px 12px; background:{PANEL_COLOR}; }}"
-            f"QPushButton:hover {{ border-color:{ORNAMENT_ACCENT_COLOR}; }}"
-            f"QPushButton:pressed {{ background:{ORNAMENT_ACCENT_COLOR}; border-color:{ORNAMENT_ACCENT_COLOR}; }}"
-        )
         back.clicked.connect(lambda: self.pages.setCurrentWidget(self.title_page))
         layout.addSpacing(24)
-        layout.addWidget(back, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch(3)
+        layout.addWidget(back, 0, Qt.AlignmentFlag.AlignHCenter)
         return page
 
+    def reference_page_shell(self, title: str, object_name: str) -> tuple[QWidget, QVBoxLayout]:
+        """首页规则页面沿用标题页边框与配色，不另开顶层窗口。"""
+        page = BaroqueTitlePage()
+        page.setObjectName(object_name)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(78, 55, 78, 55)
+        layout.setSpacing(10)
+        heading = QLabel(title)
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        heading.setFixedHeight(50)
+        heading.setStyleSheet(
+            f"color:{TITLE_TEXT_COLOR};background:transparent;border:0;font-size:30px;font-weight:bold;"
+        )
+        layout.addWidget(heading)
+        return page, layout
+
+    def reference_page_button(self, text: str, object_name: str, callback) -> QPushButton:
+        button = TitleMenuButton(text)
+        button.setObjectName(object_name)
+        button.setFixedSize(self.TITLE_MENU_BUTTON_WIDTH, 44)
+        font = QFont(self.ui_font_family)
+        font.setPointSize(14)
+        font.setBold(True)
+        button.setFont(font)
+        button.clicked.connect(callback)
+        return button
+
+    def build_title_rules_menu_page(self) -> QWidget:
+        """首页规则入口先展示规则介绍与属性专精两个分支。"""
+        page, layout = self.reference_page_shell("规则介绍", "titleRulesMenuPage")
+        layout.addStretch(2)
+        for text, object_name, callback in (
+            ("规则介绍", "titleRulesMenuGameButton", self.show_title_rules_page),
+            ("属性专精细则", "titleRulesMenuSpecializationButton", self.show_title_specialization_page),
+        ):
+            button = self.reference_page_button(text, object_name, callback)
+            layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
+            layout.addSpacing(16)
+        layout.addStretch(3)
+        layout.addWidget(self.reference_page_button(
+            "返回首页", "titleRulesMenuBackButton", lambda: self.pages.setCurrentWidget(self.title_page)
+        ), 0, Qt.AlignmentFlag.AlignHCenter)
+        return page
+
+    def build_title_rules_page(self) -> QWidget:
+        page, layout = self.reference_page_shell("游戏规则介绍", "titleRulesPage")
+        scroll = QScrollArea()
+        scroll.setObjectName("titleGameRulesScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea#titleGameRulesScroll { background:transparent; border:0; }")
+        scroll.viewport().setStyleSheet("background:transparent;border:0;")
+        content = QWidget()
+        content.setObjectName("titleGameRulesContent")
+        content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        content.setStyleSheet("background:transparent;border:0;")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(4, 4, 4, 4)
+        content_layout.setSpacing(10)
+        for rule in self.game_rule_texts():
+            label = QLabel(rule)
+            label.setWordWrap(True)
+            label.setStyleSheet(
+                f"background:{PANEL_COLOR};color:{TEXT_COLOR};border:1px solid {PANEL_BORDER_COLOR};"
+                "border-radius:6px;padding:10px;font-size:16px;"
+            )
+            content_layout.addWidget(label)
+        content_layout.addStretch(1)
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        buttons.addWidget(self.reference_page_button(
+            "查看属性专精细则", "titleRulesSpecializationButton", self.show_title_specialization_page
+        ))
+        buttons.addSpacing(16)
+        buttons.addWidget(self.reference_page_button(
+            "返回规则目录", "titleRulesBackButton", lambda: self.pages.setCurrentWidget(self.title_rules_menu_page)
+        ))
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+        return page
+
+    def build_title_specialization_page(self) -> QWidget:
+        page, layout = self.reference_page_shell("属性专精细则", "titleSpecializationPage")
+        intro = QLabel(self.specialization_intro_text())
+        intro.setObjectName("titleSpecializationIntro")
+        intro.setWordWrap(True)
+        intro.setStyleSheet(
+            f"background:{PANEL_COLOR};color:{TEXT_COLOR};border:1px solid {PANEL_BORDER_COLOR};"
+            "border-radius:6px;padding:10px;font-size:15px;"
+        )
+        layout.addWidget(intro)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("titleSpecializationScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea#titleSpecializationScroll { background:transparent; border:0; }")
+        scroll.viewport().setStyleSheet("background:transparent;border:0;")
+        content = QWidget()
+        content.setObjectName("titleSpecializationContent")
+        content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        content.setStyleSheet("background:transparent;border:0;")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(4, 4, 4, 4)
+        content_layout.setSpacing(9)
+        for attribute, first_name, first_text, second_name, second_text in self.specialization_rule_rows():
+            color = self.RESOURCE_COLORS[attribute][1]
+            panel = QFrame()
+            panel.setObjectName("titleSpecializationPanel")
+            panel.setStyleSheet(
+                f"QFrame#titleSpecializationPanel {{ background:{PANEL_COLOR};color:{TEXT_COLOR};"
+                f"border:1px solid {PANEL_BORDER_COLOR};border-radius:6px; }}"
+            )
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.setContentsMargins(10, 6, 10, 6)
+            panel_layout.setSpacing(4)
+            heading = QLabel(f"{attribute.value}系专精")
+            heading.setStyleSheet(f"color:{color};font-weight:bold;font-size:16px;background:transparent;border:0;")
+            panel_layout.addWidget(heading)
+            for stage, name, description in (
+                ("阶段一", first_name, first_text), ("阶段二", second_name, second_text)
+            ):
+                detail = QLabel(f"<b>{stage} · {html_escape(name)}</b><br>{html_escape(description)}")
+                detail.setWordWrap(True)
+                detail.setTextFormat(Qt.TextFormat.RichText)
+                detail.setStyleSheet("font-size:14px;background:transparent;border:0;")
+                panel_layout.addWidget(detail)
+            content_layout.addWidget(panel)
+        content_layout.addStretch(1)
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+        scroll_hint = QLabel("在内容区域上下滚动，可查看全部五种属性")
+        scroll_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        scroll_hint.setStyleSheet(
+            f"color:{TITLE_SUBTITLE_COLOR};background:transparent;border:0;font-size:12px;"
+        )
+        layout.addWidget(scroll_hint)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        buttons.addWidget(self.reference_page_button(
+            "查看规则介绍", "titleSpecializationRulesButton", self.show_title_rules_page
+        ))
+        buttons.addSpacing(16)
+        buttons.addWidget(self.reference_page_button(
+            "返回规则目录", "titleSpecializationBackButton", lambda: self.pages.setCurrentWidget(self.title_rules_menu_page)
+        ))
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+        return page
+
+    def build_title_settings_page(self) -> QWidget:
+        """首页设置提供当前账号管理与音量调节，与对局内设置保持独立。"""
+        page, layout = self.reference_page_shell("设置", "titleSettingsPage")
+        layout.addStretch(1)
+        for name, slider_name, initial, setter in (
+            ("背景音乐", "titleBackgroundMusicVolumeSlider", round(self.background_music._volume * 100), self.background_music.set_volume),
+            ("音效", "titleSoundEffectsVolumeSlider", round(self.sound_effects._volume * 100), self.sound_effects.set_volume),
+        ):
+            row = QFrame()
+            row.setFixedSize(760, 78)
+            row.setStyleSheet(
+                f"QFrame {{ background:{PANEL_COLOR};border:1px solid {PANEL_BORDER_COLOR};border-radius:8px; }}"
+            )
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(24, 10, 24, 10)
+            row_layout.setSpacing(18)
+            name_label = QLabel(name)
+            name_label.setFixedWidth(100)
+            name_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            name_label.setStyleSheet("background:transparent;border:0;font-size:16px;font-weight:bold;")
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setObjectName(slider_name)
+            slider.setRange(0, 100)
+            slider.setValue(initial)
+            slider.setStyleSheet(self.volume_slider_stylesheet())
+            slider.setMinimumHeight(36)
+            value_label = QLabel(f"{initial}%")
+            value_label.setFixedWidth(64)
+            value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            value_label.setStyleSheet("background:transparent;border:0;font-size:16px;font-weight:bold;")
+            slider.valueChanged.connect(
+                lambda value, label=value_label, apply=setter: (label.setText(f"{value}%"), apply(value / 100))
+            )
+            row_layout.addWidget(name_label)
+            row_layout.addWidget(slider, 1)
+            row_layout.addWidget(value_label)
+            layout.addWidget(row, 0, Qt.AlignmentFlag.AlignHCenter)
+            layout.addSpacing(20)
+            if name == "背景音乐":
+                self.title_music_slider = slider
+            else:
+                self.title_sound_slider = slider
+        account_row = QFrame()
+        account_row.setFixedSize(760, 78)
+        account_row.setStyleSheet(
+            f"QFrame {{ background:{PANEL_COLOR};border:1px solid {PANEL_BORDER_COLOR};border-radius:8px; }}"
+        )
+        account_layout = QHBoxLayout(account_row)
+        account_layout.setContentsMargins(24, 10, 24, 10)
+        account_layout.setSpacing(18)
+        self.title_settings_profile_label = QLabel("当前玩家：未登录")
+        self.title_settings_profile_label.setObjectName("titleSettingsCurrentPlayerLabel")
+        self.title_settings_profile_label.setStyleSheet(
+            f"color:{TEXT_COLOR};background:transparent;border:0;font-size:16px;font-weight:bold;"
+        )
+        logout_button = TitleMenuButton("退出登录")
+        logout_button.setObjectName("titleSettingsLogoutButton")
+        logout_button.setFixedSize(160, 44)
+        logout_font = QFont(self.ui_font_family)
+        logout_font.setPointSize(14)
+        logout_font.setBold(True)
+        logout_button.setFont(logout_font)
+        logout_button.clicked.connect(self.logout_profile)
+        account_layout.addWidget(self.title_settings_profile_label, 1)
+        achievements_button = TitleMenuButton("查看成就")
+        achievements_button.setObjectName("titleSettingsAchievementsButton")
+        achievements_button.setFixedSize(150, 44)
+        achievements_button.setFont(logout_font)
+        achievements_button.clicked.connect(self.show_achievement_list)
+        account_layout.addWidget(achievements_button, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        account_layout.addWidget(logout_button, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(account_row, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addSpacing(20)
+        layout.addStretch(2)
+        layout.addWidget(self.reference_page_button(
+            "返回首页", "titleSettingsBackButton", lambda: self.pages.setCurrentWidget(self.title_page)
+        ), 0, Qt.AlignmentFlag.AlignHCenter)
+        return page
+
+    def show_title_rules_menu_page(self) -> None:
+        self.pages.setCurrentWidget(self.title_rules_menu_page)
+
+    def show_title_rules_page(self) -> None:
+        self.pages.setCurrentWidget(self.title_rules_page)
+
+    def show_title_specialization_page(self) -> None:
+        self.pages.setCurrentWidget(self.title_specialization_page)
+
+    def show_title_settings_page(self) -> None:
+        self.title_music_slider.setValue(round(self.background_music._volume * 100))
+        self.title_sound_slider.setValue(round(self.sound_effects._volume * 100))
+        nickname = self.active_profile.nickname if self.active_profile is not None else "未登录"
+        self.title_settings_profile_label.setText(f"当前玩家：{nickname}")
+        self.pages.setCurrentWidget(self.title_settings_page)
+
+    def show_achievement_list(self) -> None:
+        if self.active_profile is None:
+            self.show_themed_message(
+                QMessageBox.Icon.Information, "成就", "请先登录玩家账号。",
+                QMessageBox.StandardButton.Ok,
+            )
+            return
+        completed = set(self.active_profile.completed)
+        dialog = QDialog(self)
+        dialog.setObjectName("achievementListDialog")
+        dialog.setWindowTitle("成就")
+        dialog.setStyleSheet(self.popup_dialog_stylesheet())
+        dialog.setFont(QFont(self.ui_font_family))
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+        heading = QLabel("冒险成就")
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        heading.setStyleSheet(f"color:{TEXT_COLOR};background:transparent;border:0;font-size:20px;font-weight:bold;")
+        layout.addWidget(heading)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # 成就列表本身不铺底色，沿用弹窗底色，避免滚动区域形成一块突兀的色块。
+        scroll.setStyleSheet("QScrollArea { background:transparent; border:0; }")
+        scroll.viewport().setStyleSheet("background:transparent;")
+        content = QWidget()
+        content.setStyleSheet("background:transparent;")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(4, 4, 8, 4)
+        content_layout.setSpacing(8)
+        for definition in ACHIEVEMENTS_BY_DIFFICULTY:
+            unlocked = definition.achievement_id in completed
+            row = QFrame()
+            achievement_color = PANEL_COLOR if unlocked else BUTTON_DISABLED_TEXT_COLOR
+            achievement_border = (
+                ACHIEVEMENT_RARITY_COLORS.get(definition.rarity, PANEL_BORDER_COLOR)
+                if unlocked
+                else ACHIEVEMENT_LOCKED_RARITY_COLORS.get(
+                    definition.rarity, BUTTON_DISABLED_BORDER_COLOR
+                )
+            )
+            achievement_background = TEXT_COLOR if unlocked else ACHIEVEMENT_LOCKED_BACKGROUND
+            row.setStyleSheet(
+                f"QFrame {{ background:{achievement_background};border:2px solid {achievement_border};border-radius:8px; }}"
+            )
+            row_layout = QVBoxLayout(row)
+            row_layout.setContentsMargins(12, 8, 12, 8)
+            row_layout.setSpacing(3)
+            title_layout = QHBoxLayout()
+            name = QLabel(definition.name)
+            name.setStyleSheet(
+                f"color:{achievement_color};background:transparent;border:0;font-weight:bold;"
+            )
+            name.setWordWrap(True)
+            status = QLabel("已达成" if unlocked else "未达成")
+            status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            status.setStyleSheet(
+                f"color:{achievement_color};background:transparent;border:0;font-weight:bold;"
+            )
+            title_layout.addWidget(name, 1)
+            title_layout.addWidget(status, 0)
+            row_layout.addLayout(title_layout)
+            requirement = QLabel(definition.requirement)
+            requirement.setStyleSheet(f"color:{achievement_color};background:transparent;border:0;font-size:11px;")
+            requirement.setWordWrap(True)
+            row_layout.addWidget(requirement)
+            content_layout.addWidget(row)
+        content_layout.addStretch(1)
+        scroll.setWidget(content)
+        layout.addWidget(scroll, 1)
+        close = QPushButton("关闭")
+        close.setFixedSize(140, 42)
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.style_popup_buttons(dialog)
+        dialog.setFixedSize(620, 700)
+        dialog.exec()
+
     def start_single_player(self) -> None:
+        if self.active_profile is None:
+            self.pages.setCurrentWidget(self.profile_page)
+            return
         self.pages.setCurrentWidget(self.difficulty_page)
 
     def create_players(self) -> list[Player]:
@@ -2512,7 +3146,8 @@ class MagicGemsQtApp(QMainWindow):
                 for index in range(4)
             ]
         opponents = self.SINGLE_PLAYER_OPPONENTS[self.ai_difficulty]
-        return [Player("你"), *(Player(name) for name in opponents)]
+        player_name = self.active_profile.nickname if self.active_profile is not None else "你"
+        return [Player(player_name), *(Player(name) for name in opponents)]
 
     def apply_single_player_opponent_names(self) -> None:
         if self.ai_battle:
@@ -2532,6 +3167,9 @@ class MagicGemsQtApp(QMainWindow):
         return f"单人 · {difficulty}模式"
 
     def start_game_with_difficulty(self, difficulty: str) -> None:
+        if self.active_profile is None:
+            self.pages.setCurrentWidget(self.profile_page)
+            return
         self.ai_difficulty = "simple" if difficulty == "simple" else "hard"
         starting_new_match = self._needs_new_match
         if starting_new_match:
@@ -2562,6 +3200,11 @@ class MagicGemsQtApp(QMainWindow):
         deck_rng = create_rng(self.seed, self.seed_mode)
         state_rng = create_rng(self.seed, self.seed_mode)
         self.game = Game(create_state(self.create_players(), build_decks(rng=deck_rng), self.seed, rng=state_rng))
+        self.achievement_tracker = (
+            AchievementTracker(self.active_profile, self.profile_store, self.ai_difficulty)
+            if not self.ai_battle and self.active_profile is not None
+            else None
+        )
         self._needs_new_match = False
         self.displayed_turn_key = (self.game.state.round_number, self.game.state.current_player)
         self.dual_move_order.clear()
@@ -2596,9 +3239,15 @@ class MagicGemsQtApp(QMainWindow):
         layout.addWidget(heading)
         rules_button = QPushButton("规则速查")
         rules_button.clicked.connect(lambda: (dialog.accept(), self.show_game_rules()))
-        mixer_button = QPushButton("音量合成器")
+        mixer_button = QPushButton("音量")
         mixer_button.clicked.connect(lambda: (dialog.accept(), self.show_volume_mixer()))
         buttons = [rules_button, mixer_button]
+        if self.active_profile is not None and not self.ai_battle:
+            achievements_button = QPushButton("成就")
+            achievements_button.clicked.connect(
+                lambda: (dialog.accept(), QTimer.singleShot(0, self.show_achievement_list))
+            )
+            buttons.append(achievements_button)
         if self.game_started:
             title_button = QPushButton("退出到标题")
             title_button.clicked.connect(
@@ -2622,14 +3271,14 @@ class MagicGemsQtApp(QMainWindow):
     def show_volume_mixer(self) -> None:
         dialog = QDialog(self)
         dialog.setObjectName("volumeMixerDialog")
-        dialog.setWindowTitle("音量合成器")
+        dialog.setWindowTitle("音量")
         dialog.setStyleSheet(self.popup_dialog_stylesheet())
         dialog.setFont(QFont(self.ui_font_family))
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(24, 18, 24, 18)
         layout.setSpacing(12)
 
-        title = QLabel("音量合成器")
+        title = QLabel("音量")
         title.setObjectName("volumeMixerHeading")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"font-size:18px;font-weight:bold;color:{TEXT_COLOR};background:transparent;border:0;")
@@ -2675,6 +3324,19 @@ class MagicGemsQtApp(QMainWindow):
         dialog.setFixedSize(540, 330)
         dialog.exec()
 
+    @staticmethod
+    def game_rule_texts() -> tuple[str, ...]:
+        """首页规则页与局内规则速查共用同一份说明。"""
+        return (
+            "每回合选择一项行动：领取资源、购买宠物，或预购一张市场宠物。",
+            "领取资源：拿取三种不同属性零碎各1枚，或同种属性零碎（≥4）2枚。",
+            "购买宠物：支付零碎或贤者碎晶来购买卡片。已获得的宠物提供永久属性折扣和卡面分数；贤者碎晶可替代任意属性。自己的回合中，可拖动已购买的双属性宠物卡到它的任一属性栏，调整当前折扣属性；购买时也可重新选择。",
+            "预购宠物：从市场选择一张卡放置到预购区并获得1枚贤者碎晶；预购区最多3张；之后仍需花费行动购买预购的卡片。",
+            "属性专精：2张触发第1次阶段一，3张触发第1次阶段二；之后每增加3张重复阶段一、阶段二（5/6张、8/9张……），双属性不计入。",
+            "魔法师卡：每局随机公开3张，符合属性条件后于回合结算时自动获得，每张加3分；获得后从剩余牌堆补充。",
+            "胜利：只在整轮结束时结算；轮末仍达到20分的玩家中，最高分者获胜，并列则共同获胜。若无人达标且市场未耗尽，则继续游戏；市场耗尽时轮末结束对局，但无人达标则无人获胜。",
+        )
+
     def show_game_rules(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("游戏规则介绍")
@@ -2688,15 +3350,6 @@ class MagicGemsQtApp(QMainWindow):
         heading.setStyleSheet(f"font-size:18px;font-weight:bold;background:transparent;border:0;color:{TEXT_COLOR};")
         layout.addWidget(heading)
 
-        rules = (
-            "每回合选择一项行动：领取资源、购买宠物，或预购一张市场宠物。",
-            "领取资源：拿取三种不同属性零碎各1枚，或同种属性零碎（≥4）2枚。",
-            "购买宠物：支付零碎或贤者碎晶来购买卡片。已获得的宠物提供永久属性折扣和卡面分数；贤者碎晶可替代任意属性。自己的回合中，可拖动已购买的双属性宠物卡到它的任一属性栏，调整当前折扣属性；购买时也可重新选择。",
-            "预购宠物：从市场选择一张卡放置到预购区并获得1枚贤者碎晶；预购区最多3张；之后仍需花费行动购买预购的卡片。",
-            "属性专精：2张触发第1次阶段一，3张触发第1次阶段二；之后每增加3张重复阶段一、阶段二（5/6张、8/9张……），双属性不计入。",
-            "魔法师卡：每局随机公开3张，符合属性条件后于回合结算时自动获得，每张加3分；获得后从剩余牌堆补充。",
-            "胜利：只在整轮结束时结算；轮末仍达到20分的玩家中，最高分者获胜，并列则共同获胜。若无人达标且市场未耗尽，则继续游戏；市场耗尽时轮末结束对局，但无人达标则无人获胜。",
-        )
         scroll = QScrollArea()
         scroll.setObjectName("gameRulesScroll")
         scroll.setWidgetResizable(True)
@@ -2712,7 +3365,7 @@ class MagicGemsQtApp(QMainWindow):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(4, 4, 8, 4)
         content_layout.setSpacing(9)
-        for text in rules:
+        for text in self.game_rule_texts():
             label = QLabel(text)
             label.setWordWrap(True)
             label.setStyleSheet(
@@ -2736,9 +3389,10 @@ class MagicGemsQtApp(QMainWindow):
         dialog.setFixedSize(650, 560)
         dialog.exec()
 
-    def show_specialization_rules(self) -> None:
-        """Show all current specialization rules in a non-scrolling dialog."""
-        rules = (
+    @staticmethod
+    def specialization_rule_rows() -> tuple:
+        """首页专精页与局内专精弹窗共用同一份效果说明。"""
+        return (
             (
                 Attribute.WATER,
                 "润泽",
@@ -2776,6 +3430,17 @@ class MagicGemsQtApp(QMainWindow):
             ),
         )
 
+    @staticmethod
+    def specialization_intro_text() -> str:
+        return (
+            "专精触发条件：2 张同属性单属性宠物触发第 1 次阶段一，3 张触发第 1 次阶段二；"
+            "之后每增加 3 张，阶段一和阶段二各再触发一次（第 2 次为 5/6 张，第 3 次为 8/9 张，以此类推）。"
+            "双属性宠物的两种属性都不计入专精数量。"
+        )
+
+    def show_specialization_rules(self) -> None:
+        """Show all current specialization rules in a non-scrolling dialog."""
+
         dialog = QDialog(self)
         dialog.setObjectName("specializationRulesDialog")
         dialog.setWindowTitle("属性专精规则")
@@ -2794,11 +3459,7 @@ class MagicGemsQtApp(QMainWindow):
         outer.setContentsMargins(14, 12, 14, 12)
         outer.setSpacing(6)
 
-        intro = QLabel(
-            "专精触发条件：2 张同属性单属性宠物触发第 1 次阶段一，3 张触发第 1 次阶段二；"
-            "之后每增加 3 张，阶段一和阶段二各再触发一次（第 2 次为 5/6 张，第 3 次为 8/9 张，以此类推）。"
-            "双属性宠物的两种属性都不计入专精数量。"
-        )
+        intro = QLabel(self.specialization_intro_text())
         intro.setWordWrap(True)
         intro.setStyleSheet(
             f"background:{PANEL_COLOR};color:{TEXT_COLOR};border:1px solid {PANEL_BORDER_COLOR};padding:6px;font-size:13px;"
@@ -2810,7 +3471,7 @@ class MagicGemsQtApp(QMainWindow):
         content_layout.setContentsMargins(2, 2, 2, 2)
         content_layout.setSpacing(5)
 
-        for attribute, stage_one_name, stage_one_text, stage_two_name, stage_two_text in rules:
+        for attribute, stage_one_name, stage_one_text, stage_two_name, stage_two_text in self.specialization_rule_rows():
             color = self.RESOURCE_COLORS[attribute][1]
             panel = QFrame()
             panel.setObjectName("specializationRulePanel")
@@ -4673,27 +5334,21 @@ class MagicGemsQtApp(QMainWindow):
             specialization_effect
             and specialization_effect.attribute == Attribute.DARK
             and specialization_effect.stage == 1
-            and messages
         ):
-            steal_match = re.search(
-                r"(.+?) 从 (.+?) 偷取 1 枚(.+?)系灵碎",
-                messages[0].partition("：")[2] or messages[0],
-            )
-            if steal_match:
-                attacker_name, victim_name, attribute_name = steal_match.groups()
-                attribute = next(
-                    (item for item in ATTRIBUTES if item.value == attribute_name),
-                    None,
-                )
-                attacker_index = next(
-                    (index for index, player in enumerate(state.players) if player.name == attacker_name),
-                    None,
-                )
+            # 用专精座位和资源差值确定转移，昵称与 AI 名称相同也不会混淆动画目标。
+            attacker_index = specialization_effect.player_index
+            for attribute in ATTRIBUTES:
+                if state.players[attacker_index].resources[attribute] <= before["resources"][attacker_index][attribute]:
+                    continue
                 victim_index = next(
-                    (index for index, player in enumerate(state.players) if player.name == victim_name),
+                    (
+                        index for index, player in enumerate(state.players)
+                        if index != attacker_index
+                        and player.resources[attribute] < before["resources"][index][attribute]
+                    ),
                     None,
                 )
-                if attribute is not None and attacker_index is not None and victim_index is not None:
+                if victim_index is not None:
                     resource_color = self.RESOURCE_COLORS[attribute][1]
                     resource_steal = {
                         "kind": "resource-steal",
@@ -4705,6 +5360,7 @@ class MagicGemsQtApp(QMainWindow):
                         "start": before["player_origins"].get(victim_index, QRect()),
                         "target": before["player_origins"].get(attacker_index, QRect()),
                     }
+                    break
 
         for player_index, player in enumerate(state.players):
             previous = before["resources"][player_index]
@@ -5389,6 +6045,9 @@ class MagicGemsQtApp(QMainWindow):
                 return
             if self.turn_animation_running:
                 return
+            if self.achievement_toast_queue:
+                self.play_next_achievement_toast()
+                return
             if (
                 self.game.state.pending_specializations
                 and self.game.state.pending_specializations[0].player_index == 0
@@ -6060,6 +6719,53 @@ class MagicGemsQtApp(QMainWindow):
         self.impact_animation = group
         group.start()
 
+    def play_next_achievement_toast(self) -> None:
+        """按队列逐条显示成就提示，并在结束后继续对局结算流程。"""
+        if self.achievement_toast_animation is not None or not self.achievement_toast_queue:
+            return
+        if self.pages.currentWidget() is not self.game_page:
+            self.achievement_toast_queue.clear()
+            self.play_next_impact_animation()
+            return
+
+        definition = self.achievement_toast_queue.pop(0)
+        toast = self.achievement_toast
+        toast.set_achievement(definition)
+        width, height = toast.width(), toast.height()
+        start = QRect(-width - 8, 22, width, height)
+        visible = QRect(20, 22, width, height)
+        finish = QRect(-width - 8, 22, width, height)
+        toast.setGeometry(start)
+        toast.show()
+        toast.raise_()
+
+        sequence = QSequentialAnimationGroup(self)
+        enter = QPropertyAnimation(toast, b"geometry", sequence)
+        enter.setDuration(300)
+        enter.setStartValue(start)
+        enter.setEndValue(visible)
+        enter.setEasingCurve(QEasingCurve.Type.OutCubic)
+        sequence.addAnimation(enter)
+        sequence.addAnimation(QPauseAnimation(2600, sequence))
+        leave = QPropertyAnimation(toast, b"geometry", sequence)
+        leave.setDuration(240)
+        leave.setStartValue(visible)
+        leave.setEndValue(finish)
+        leave.setEasingCurve(QEasingCurve.Type.InCubic)
+        sequence.addAnimation(leave)
+        sequence.finished.connect(self.finish_achievement_toast)
+        self.achievement_toast_animation = sequence
+        sequence.start()
+
+    def finish_achievement_toast(self) -> None:
+        toast = self.achievement_toast
+        toast.hide()
+        toast.move(-toast.width() - 8, 22)
+        animation, self.achievement_toast_animation = self.achievement_toast_animation, None
+        if animation is not None:
+            animation.deleteLater()
+        self.play_next_impact_animation()
+
     def finish_impact_animation(self, overlays: QWidget | list[QWidget]) -> None:
         animated_overlays = overlays if isinstance(overlays, list) else [overlays]
         market_refill_card_ids = [
@@ -6213,6 +6919,12 @@ class MagicGemsQtApp(QMainWindow):
             previous_duals = actor_player.dual_cards()
             previous_wizards = tuple(actor_player.wizard_cards)
             messages = self.game.execute(action)
+            unlocked_achievements: list[str] = []
+            achievement_save_error = None
+            if self.achievement_tracker is not None:
+                unlocked_achievements, achievement_save_error = self.achievement_tracker.consume(
+                    self.game.last_events, self.game.state
+                )
             old_market_ids = {
                 card_id
                 for card_id, location in impact_snapshot["locations"].items()
@@ -6302,6 +7014,16 @@ class MagicGemsQtApp(QMainWindow):
                     )
                 else:
                     self.log(message, color=TEXT_COLOR)
+            for achievement_id in unlocked_achievements:
+                definition = next(
+                    (item for item in ACHIEVEMENTS if item.achievement_id == achievement_id),
+                    None,
+                )
+                if definition is not None:
+                    self.log(f"达成成就：【{definition.name}】", bold=True, color=ORNAMENT_ACCENT_COLOR)
+                    self.achievement_toast_queue.append(definition)
+            if achievement_save_error:
+                self.log(f"成就已在本局达成，但档案暂未保存：{achievement_save_error}", bold=True, color=PROFILE_ERROR_COLOR)
             previous_wizard_ids = {wizard.card_id for wizard in previous_wizards}
             acquired_wizards = [
                 wizard for wizard in actor_player.wizard_cards
@@ -6895,6 +7617,13 @@ class MagicGemsQtApp(QMainWindow):
     def stop_match_flow(self) -> None:
         """停止本局所有计时器和动画，供重新开局、返回标题时共用。"""
         self.ai_timer.stop()
+        if self.achievement_toast_animation is not None:
+            self.achievement_toast_animation.stop()
+            self.achievement_toast_animation.deleteLater()
+            self.achievement_toast_animation = None
+        self.achievement_toast_queue.clear()
+        self.achievement_toast.hide()
+        self.achievement_toast.move(-self.achievement_toast.width() - 8, 22)
         if self.deepseek_future is not None:
             self.deepseek_future.cancel()
             self.deepseek_future = None

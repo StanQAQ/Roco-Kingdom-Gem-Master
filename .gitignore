@@ -47,6 +47,9 @@ htmlcov/
 /logs/
 *.log
 
+# 玩家档案保存在系统用户数据目录；防止误放到仓库时上传
+/profile/
+
 # 平衡模拟生成的数据；保留 analysis/ 下的 Markdown 报告和说明
 analysis/
 
@@ -83,6 +86,12 @@ Desktop.ini
 tests/
 /src/animation_demo.py
 /simulate_balance.py
+
+# 方案、规划类 Markdown 和 Word 文档仅保留在本地，不上传至 GitHub
+/PLAN.md
+*方案*.md
+*规划*.md
+*.docx
 
 # 原始文件
 original_file/

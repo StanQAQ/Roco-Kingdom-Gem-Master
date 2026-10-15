@@ -45,6 +45,20 @@ ACTION_BUTTON_TEXT_COLOR = PANEL_COLOR  # 深色行动按钮上的浅色文字�
 BUTTON_DISABLED_COLOR = "#d2d0cc"  # 确认、预购和取消按钮不可用时的中性浅灰底色。
 BUTTON_DISABLED_TEXT_COLOR = "#6e6862"  # 浅灰禁用按钮上的柔和深灰文字色。
 BUTTON_DISABLED_BORDER_COLOR = "#b7b0a1"  # 不可用按钮的边框色。
+ACHIEVEMENT_LOCKED_BACKGROUND = "#e8e5de"  # 未达成成就条目的浅灰背景色。
+ACHIEVEMENT_APPRENTICE_COLOR = "#62a96b"  # 见习成就稀有度标签和解锁提示的绿色强调色。
+ACHIEVEMENT_INTERMEDIATE_COLOR = "#eec545"  # 中级成就稀有度标签和解锁提示的黄色强调色。
+ACHIEVEMENT_ADVANCED_COLOR = "#dc625b"  # 高级成就稀有度标签和解锁提示的红色强调色。
+ACHIEVEMENT_RARITY_COLORS = {  # 成就稀有度到标签及解锁提示强调色的对应关系。
+    "见习": ACHIEVEMENT_APPRENTICE_COLOR,
+    "中级": ACHIEVEMENT_INTERMEDIATE_COLOR,
+    "高级": ACHIEVEMENT_ADVANCED_COLOR,
+}
+ACHIEVEMENT_LOCKED_RARITY_COLORS = {  # 未达成成就边框的低饱和稀有度颜色，保留类别提示并呈现置灰效果。
+    "见习": "#9ba592",
+    "中级": "#b7ab8b",
+    "高级": "#b3978f",
+}
 CONTROL_DISABLED_FILL_COLOR = "#d2d0cc"  # 不可领取的公共资源按钮填充色。
 CONTROL_DISABLED_TEXT_COLOR = "#8b8985"  # 不可领取的公共资源按钮文字色。
 STATUS_BADGE_COLOR = "#eec545"  # 游戏顶部模式标签的背景色。
@@ -61,6 +75,7 @@ TRANSPARENT_RGBA = (0, 0, 0, 0)  # 动画渐变的完全透明起始颜色（RGB
 TITLE_TEXT_COLOR = "#ffffff"  # 标题页主标题及按钮选中文字的白色。
 TITLE_SUBTITLE_COLOR = "#f0d9ae"  # 标题页副标题的浅金色。
 TITLE_SHADOW_COLOR = "#3a281c"  # 标题文字投影的深棕色。
+PROFILE_ERROR_COLOR = "#f3a7a0"  # 昵称输入页错误提示的浅红色文字。
 
 # 魔法师卡、认可提示和贤者碎晶相关颜色。
 WIZARD_CARD_BORDER_COLOR = "#d2a83d"  # 魔法师卡及其认可提示框的金色边框。
