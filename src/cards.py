@@ -39,8 +39,8 @@ def name_for_card_id(card_id: str | None) -> str:
 # 卡片.md中与旧牌库不同的属性、分数和成本，格式为：(属性, 分数, 成本)。
 CARD_DATA_CORRECTIONS = {
     'D04': ((A.WATER, A.CUTE), 0, [(A.FIRE, 1), (A.CUTE, 1), (A.DARK, 2)]),
-    'D05': ((A.WATER, A.CUTE), 1, [(A.FIRE, 2), (A.CUTE, 1), (A.DARK, 1)]),
-    'D07': ((A.FIRE, A.GRASS), 1, [(A.WATER, 1), (A.GRASS, 1), (A.CUTE, 2)]),
+    'D05': ((A.WATER, A.CUTE), 0, [(A.FIRE, 2), (A.CUTE, 1), (A.DARK, 1)]),
+    'D07': ((A.FIRE, A.GRASS), 0, [(A.WATER, 1), (A.GRASS, 1), (A.CUTE, 2)]),
     'S26': ((A.WATER,), 1, [(A.FIRE, 3), (A.GRASS, 2), (A.CUTE, 2)]),
     'S27': ((A.WATER,), 1, [(A.FIRE, 3), (A.GRASS, 2), (A.CUTE, 2)]),
     'S28': ((A.WATER,), 2, [(A.FIRE, 5)]),
@@ -84,17 +84,17 @@ def all_cards() -> list[PetCard]:
 
     level_one = [
         ("S01", A.WATER, 0, [(A.FIRE, 2), (A.GRASS, 2)]), ("S02", A.WATER, 0, [(A.FIRE, 2), (A.CUTE, 2)]),
-        ("S03", A.WATER, 0, [(A.WATER, 2), (A.DARK, 2)]), ("S04", A.WATER, 1, [(A.FIRE, 1), (A.GRASS, 1), (A.CUTE, 2)]),
+        ("S03", A.WATER, 0, [(A.WATER, 2), (A.DARK, 2)]), ("S04", A.WATER, 0, [(A.FIRE, 1), (A.GRASS, 1), (A.CUTE, 2)]),
         ("S05", A.WATER, 0, [(A.FIRE, 1), (A.DARK, 1), (A.GRASS, 2)]), ("S06", A.FIRE, 0, [(A.WATER, 2), (A.GRASS, 2)]),
         ("S07", A.FIRE, 0, [(A.WATER, 2), (A.DARK, 2)]), ("S08", A.FIRE, 0, [(A.GRASS, 2), (A.CUTE, 2)]),
-        ("S09", A.FIRE, 1, [(A.WATER, 1), (A.GRASS, 1), (A.DARK, 2)]), ("S10", A.FIRE, 0, [(A.WATER, 1), (A.CUTE, 1), (A.GRASS, 2)]),
+        ("S09", A.FIRE, 0, [(A.WATER, 1), (A.GRASS, 1), (A.DARK, 2)]), ("S10", A.FIRE, 0, [(A.WATER, 1), (A.CUTE, 1), (A.GRASS, 2)]),
         ("S11", A.GRASS, 0, [(A.WATER, 2), (A.FIRE, 2)]), ("S12", A.GRASS, 0, [(A.GRASS, 2), (A.CUTE, 2)]),
-        ("S13", A.GRASS, 0, [(A.FIRE, 2), (A.DARK, 2)]), ("S14", A.GRASS, 1, [(A.WATER, 1), (A.FIRE, 1), (A.CUTE, 2)]),
+        ("S13", A.GRASS, 0, [(A.FIRE, 2), (A.DARK, 2)]), ("S14", A.GRASS, 0, [(A.WATER, 1), (A.FIRE, 1), (A.CUTE, 2)]),
         ("S15", A.GRASS, 0, [(A.FIRE, 1), (A.DARK, 1), (A.WATER, 2)]), ("S16", A.CUTE, 0, [(A.FIRE, 2), (A.GRASS, 2)]),
         ("S17", A.CUTE, 0, [(A.FIRE, 2), (A.WATER, 2)]), ("S18", A.CUTE, 0, [(A.CUTE, 2), (A.DARK, 2)]),
-        ("S19", A.CUTE, 1, [(A.FIRE, 1), (A.GRASS, 1), (A.WATER, 2)]), ("S20", A.CUTE, 0, [(A.FIRE, 1), (A.DARK, 1), (A.GRASS, 2)]),
+        ("S19", A.CUTE, 0, [(A.FIRE, 1), (A.GRASS, 1), (A.WATER, 2)]), ("S20", A.CUTE, 0, [(A.FIRE, 1), (A.DARK, 1), (A.GRASS, 2)]),
         ("S21", A.DARK, 0, [(A.WATER, 2), (A.FIRE, 2)]), ("S22", A.DARK, 0, [(A.WATER, 2), (A.CUTE, 2)]),
-        ("S23", A.DARK, 0, [(A.FIRE, 2), (A.DARK, 2)]), ("S24", A.DARK, 1, [(A.WATER, 1), (A.FIRE, 1), (A.CUTE, 2)]),
+        ("S23", A.DARK, 0, [(A.FIRE, 2), (A.DARK, 2)]), ("S24", A.DARK, 0, [(A.WATER, 1), (A.FIRE, 1), (A.CUTE, 2)]),
         ("S25", A.DARK, 0, [(A.FIRE, 1), (A.GRASS, 1), (A.WATER, 2)]),
     ]
     for card_id, attribute, score, cost in level_one:
@@ -103,11 +103,11 @@ def all_cards() -> list[PetCard]:
     dual_one = [
         ("D01", (A.WATER, A.FIRE), 0, [(A.GRASS, 2), (A.CUTE, 2)]), ("D02", (A.WATER, A.FIRE), 0, [(A.GRASS, 1), (A.DARK, 1), (A.CUTE, 2)]),
         ("D03", (A.WATER, A.GRASS), 0, [(A.FIRE, 2), (A.DARK, 2)]), ("D04", (A.WATER, A.GRASS), 0, [(A.FIRE, 1), (A.CUTE, 1), (A.DARK, 2)]),
-        ("D05", (A.WATER, A.GRASS), 1, [(A.FIRE, 2), (A.CUTE, 1), (A.DARK, 1)]), ("D06", (A.WATER, A.DARK), 0, [(A.FIRE, 2), (A.GRASS, 2)]),
-        ("D07", (A.WATER, A.DARK), 1, [(A.FIRE, 1), (A.GRASS, 1), (A.CUTE, 2)]), ("D08", (A.FIRE, A.GRASS), 0, [(A.WATER, 2), (A.CUTE, 2)]),
+        ("D05", (A.WATER, A.GRASS), 0, [(A.FIRE, 2), (A.CUTE, 1), (A.DARK, 1)]), ("D06", (A.WATER, A.DARK), 0, [(A.FIRE, 2), (A.GRASS, 2)]),
+        ("D07", (A.WATER, A.DARK), 0, [(A.FIRE, 1), (A.GRASS, 1), (A.CUTE, 2)]), ("D08", (A.FIRE, A.GRASS), 0, [(A.WATER, 2), (A.CUTE, 2)]),
         ("D09", (A.FIRE, A.GRASS), 0, [(A.WATER, 1), (A.DARK, 1), (A.CUTE, 2)]), ("D10", (A.FIRE, A.CUTE), 0, [(A.CUTE, 2), (A.DARK, 2)]),
         ("D11", (A.FIRE, A.CUTE), 0, [(A.GRASS, 1), (A.WATER, 1), (A.DARK, 2)]), ("D12", (A.FIRE, A.DARK), 0, [(A.WATER, 2), (A.CUTE, 2)]),
-        ("D13", (A.FIRE, A.DARK), 1, [(A.WATER, 1), (A.GRASS, 1), (A.CUTE, 2)]), ("D14", (A.GRASS, A.CUTE), 0, [(A.FIRE, 2), (A.WATER, 2)]),
+        ("D13", (A.FIRE, A.DARK), 0, [(A.WATER, 1), (A.GRASS, 1), (A.CUTE, 2)]), ("D14", (A.GRASS, A.CUTE), 0, [(A.FIRE, 2), (A.WATER, 2)]),
         ("D15", (A.GRASS, A.CUTE), 0, [(A.FIRE, 1), (A.WATER, 1), (A.DARK, 2)]),
     ]
     for card_id, attributes, score, cost in dual_one:

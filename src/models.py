@@ -119,7 +119,7 @@ class GameState:
     action_count: int = 0
     discarded: dict[int, list[PetCard]] = field(default_factory=lambda: {1: [], 2: [], 3: []})
     pending_specializations: list[SpecializationEffect] = field(default_factory=list)
-    # 保留固定的公开牌位；None 表示该位置待下一个回合开始时补卡。
+    # 保留固定的公开牌位；None 表示已被领取，本局不再补充。
     wizard_market: list[WizardCard | None] = field(default_factory=list)
     wizard_deck: list[WizardCard] = field(default_factory=list)
     rng: random.Random = field(default_factory=random.Random, repr=False)

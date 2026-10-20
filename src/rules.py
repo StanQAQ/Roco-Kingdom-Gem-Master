@@ -183,8 +183,8 @@ def create_state(
     wizard_deck = list(MAGICIAN_CARDS)
     rng.shuffle(wizard_deck)
     wizard_market = wizard_deck[:WIZARD_MARKET_SIZE]
-    # 开局仅公开三张，其余保留在本局牌堆，供获得魔法师卡后补位。
-    wizard_deck = wizard_deck[WIZARD_MARKET_SIZE:]
+    # 本局仅使用抽中的五张，其余魔法师不进入本局，也不保留补牌堆。
+    wizard_deck = []
     return GameState(
         players,
         {attribute: 7 for attribute in ATTRIBUTES},

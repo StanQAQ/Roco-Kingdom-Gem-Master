@@ -3506,10 +3506,10 @@ class MagicGemsQtApp(QMainWindow):
         return (
             "每回合选择一项行动：领取资源、购买宠物，或预购一张市场宠物。",
             "领取资源：拿取三种不同属性零碎各1枚，或同种属性零碎（≥4）2枚。",
-            "购买宠物：支付零碎或贤者碎晶来购买卡片。已获得的宠物提供永久属性折扣和卡面分数；贤者碎晶可替代任意属性。自己的回合中，可拖动已购买的双属性宠物卡到它的任一属性栏，调整当前折扣属性；购买时也可重新选择。",
+            "购买宠物：支付零碎或贤者碎晶来购买卡片。已获得的宠物提供永久属性折扣和卡面分数；所有1级宠物基础分数为0分，专精仍可改变分数；贤者碎晶可替代任意属性。自己的回合中，可拖动已购买的双属性宠物卡到它的任一属性栏，调整当前折扣属性；购买时也可重新选择。",
             "预购宠物：从市场选择一张卡放置到预购区并获得1枚贤者碎晶；预购区最多3张；之后仍需花费行动购买预购的卡片。",
             "属性专精：2张触发第1次阶段一，3张触发第1次阶段二；之后每增加3张重复阶段一、阶段二（5/6张、8/9张……），双属性不计入。",
-            "魔法师卡：每局随机公开3张，符合属性条件后于回合结算时自动获得，每张加3分；获得后从剩余牌堆补充。",
+            "魔法师卡：每局随机公开5张，符合属性条件后于回合结算时自动获得，每张加3分；获得后保留空位，本局不再补充。",
             "胜利：只在整轮结束时结算；轮末仍达到20分的玩家中，最高分者获胜，并列则共同获胜。若无人达标且市场未耗尽，则继续游戏；市场耗尽时轮末结束对局，但无人达标则无人获胜。",
         )
 
@@ -3904,7 +3904,7 @@ class MagicGemsQtApp(QMainWindow):
         for slot in range(WIZARD_MARKET_SIZE):
             wizard = state.wizard_market[slot] if slot < len(state.wizard_market) else None
             # 每个市场位置使用一个永久保留的固定尺寸容器。卡牌被拿走时只清空
-            # 容器里的卡牌，不移除布局项；补卡也只放回原卡槽，右侧卡牌不会左移。
+            # 容器里的卡牌，不移除布局项；本局不再补充，右侧卡牌不会左移。
             if slot >= len(self.wizard_market_slot_widgets):
                 slot_container = QWidget()
                 slot_container.setFixedSize(WizardCardView.WIDTH, WizardCardView.HEIGHT)
@@ -7283,7 +7283,7 @@ class MagicGemsQtApp(QMainWindow):
         self.play_next_wizard_animation()
 
     def prepare_wizard_market_for_turn(self) -> tuple:
-        """切换回合时先补入空位，避免新玩家行动前仍看到旧空位。"""
+        """保留回合准备接口；当前固定五张的规则下不会生成补卡。"""
         state = self.game.state
         turn_key = (state.round_number, state.current_player)
         if self.wizard_refill_turn_key == turn_key:
@@ -7325,7 +7325,7 @@ class MagicGemsQtApp(QMainWindow):
 
         wizard, player_name = self.wizard_animation_queue.pop(0)
         self.wizard_animation_running = True
-        # 新回合补卡与认可提示同时淡入；后续认可仍由本队列逐张播放。
+        # 当前规则不再补魔法师卡，兼容准备接口返回空列表；认可仍逐张播放。
         self.start_turn_wizard_market_refill()
         overlay = WizardCardView(wizard, self, width=70)
         overlay.setObjectName("wizardAcquisitionOverlay")
@@ -7539,8 +7539,7 @@ class MagicGemsQtApp(QMainWindow):
             return
         self.turn_banner_pending = False
         self.turn_animation_running = True
-        # 回合提示开始时同时补入魔法师牌；市场卡补牌也在此时启动，
-        # 两类补卡动画因此同步播放，而不是等提示结束后才突然出现魔法师卡。
+        # 保留魔法师回合准备调用；当前规则只会补宠物市场，魔法师空位永久保留。
         if not self.game.state.finished:
             self.start_turn_wizard_market_refill()
         state = self.game.state
@@ -7800,6 +7799,53 @@ class MagicGemsQtApp(QMainWindow):
         score.setAlignment(Qt.AlignmentFlag.AlignCenter)
         score.setWordWrap(True)
         panel_layout.addWidget(score)
+
+        if self.achievement_tracker is not None:
+            # 从单局追踪器读取，不依赖已消费的弹窗队列；输掉对局也展示新成就。
+            heading = QLabel("本局新达成的成就")
+            heading.setObjectName("endGameMessage")
+            heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            panel_layout.addWidget(heading)
+            achievement_ids = set(self.achievement_tracker.unlocked_this_match)
+            definitions = [
+                item for item in ACHIEVEMENTS_BY_DIFFICULTY
+                if item.achievement_id in achievement_ids
+            ]
+            scroll = QScrollArea()
+            scroll.setObjectName("endGameAchievements")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            scroll.setStyleSheet(
+                "QScrollArea#endGameAchievements, QScrollArea#endGameAchievements QWidget "
+                "{ background:transparent; border:0; }"
+            )
+            content = QWidget()
+            achievements_layout = QVBoxLayout(content)
+            achievements_layout.setContentsMargins(0, 0, 0, 0)
+            achievements_layout.setSpacing(6)
+            for definition in definitions:
+                label = QLabel(definition.name)
+                label.setObjectName("endGameAchievement")
+                label.setWordWrap(True)
+                label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                accent = ACHIEVEMENT_RARITY_COLORS.get(definition.rarity, ORNAMENT_ACCENT_COLOR)
+                label.setStyleSheet(
+                    f"QLabel#endGameAchievement {{ color:{PANEL_COLOR}; background:{TEXT_COLOR}; "
+                    f"border:2px solid {accent}; border-radius:{CARD_CORNER_RADIUS}px; "
+                    "font-size:14px; font-weight:bold; padding:4px; }"
+                )
+                achievements_layout.addWidget(label)
+            if not definitions:
+                empty = QLabel("本局未达成新成就")
+                empty.setObjectName("endGameMessage")
+                empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                achievements_layout.addWidget(empty)
+            scroll.setWidget(content)
+            # 多个成就可滚动查看，避免结算面板被长列表撑出窗口。
+            scroll.setFixedHeight(min(160, max(34, content.sizeHint().height() + 4)))
+            panel_layout.addWidget(scroll)
 
         buttons = QHBoxLayout()
         buttons.setSpacing(10)

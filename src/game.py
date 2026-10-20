@@ -160,7 +160,7 @@ class Game:
         self.last_events = ()
         if self.state.finished:
             raise RuleError("对局已经结束")
-        # CLI/模拟等非 Qt 调用也会在新回合第一次处理行动前补齐待补的魔法师牌位。
+        # 保留回合准备接口；魔法师牌位在领取后永久留空。
         self.begin_turn()
         if self.state.pending_specializations:
             if action.kind != "specialization":
@@ -264,14 +264,8 @@ class Game:
         return messages
 
     def begin_turn(self) -> list:
-        """在新回合开始时按原牌位补入魔法师卡，并返回补入的卡片。"""
-        refilled = []
-        for index, wizard in enumerate(self.state.wizard_market):
-            if wizard is None and self.state.wizard_deck:
-                replacement = self.state.wizard_deck.pop(0)
-                self.state.wizard_market[index] = replacement
-                refilled.append(replacement)
-        return refilled
+        """保留 GUI 与命令行的回合准备接口；本局魔法师卡不补充。"""
+        return []
 
     def _finish_turn(self) -> list[str]:
         acting_index = self.state.current_player
@@ -285,7 +279,7 @@ class Game:
                 index for index, available in enumerate(self.state.wizard_market)
                 if available is not None and available.card_id == wizard.card_id
             )
-            # 领取后保留固定牌位为空；替补卡等下一回合开始时再补入。
+            # 领取后永久保留空位，右侧卡片不移动，也不会补入新卡。
             self.state.wizard_market[wizard_index] = None
         market_exhausted = not any(self.state.market.cards[level] for level in (1, 2, 3))
         if any(player.score >= VICTORY_SCORE for player in self.state.players):

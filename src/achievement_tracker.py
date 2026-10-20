@@ -40,6 +40,7 @@ class AchievementTracker:
         self.blocked_attacks = 0
         self.successful_hits = 0
         self.pending_save: set[str] = set()
+        self.unlocked_this_match: list[str] = []  # 本局首次解锁的成就，供最终结算展示。
 
     def consume(self, events: Iterable[GameEvent], state: GameState) -> tuple[list[str], str | None]:
         unlocked: list[str] = []
@@ -76,6 +77,8 @@ class AchievementTracker:
                 self.wizard_awards += 1
                 if self.wizard_awards >= 3:
                     self._unlock("three_wizard_awards", unlocked)
+                if self.wizard_awards >= 5:
+                    self._unlock("win_wizard_score_only", unlocked)
 
             elif kind == "specialization_triggered" and actor == 0:
                 stage = int(data.get("stage", 0))
@@ -143,7 +146,6 @@ class AchievementTracker:
 
     def _check_score_route(self, player, unlocked: list[str]) -> None:
         cards = [card for card, _chosen in player.purchased]
-        wizard_score = sum(wizard.score for wizard in player.wizard_cards)
         pet_score = sum(card.effective_score for card in cards)
         scoring_cards = [card for card in cards if card.effective_score > 0]
         if scoring_cards and not player.wizard_cards and pet_score == player.score:
@@ -151,8 +153,6 @@ class AchievementTracker:
             all_scoring_cards_single = all(not card.is_dual for card in scoring_cards)
             if all_scoring_cards_single and len(attributes) == 1:
                 self._unlock("win_one_attribute_score_only", unlocked)
-        if wizard_score == player.score and player.score > 0:
-            self._unlock("win_wizard_score_only", unlocked)
         if cards and all(card.is_dual for card in cards):
             self._unlock("win_dual_purchases_only", unlocked)
 
@@ -170,6 +170,7 @@ class AchievementTracker:
             item for item in self.profile.incomplete if item != achievement_id
         ]
         self.pending_save.add(achievement_id)
+        self.unlocked_this_match.append(achievement_id)
         unlocked.append(achievement_id)
 
     def _save_unlocked(self) -> str | None:

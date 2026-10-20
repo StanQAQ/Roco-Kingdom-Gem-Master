@@ -48,7 +48,8 @@ ACHIEVEMENTS = (
     AchievementDefinition("absorb_ten_sage_shards", "大草原", "使用【汲取】一次获得10片贤者碎晶", 10),
     AchievementDefinition("absorb_three_sage_shards", "你们都被恩佐捉走了吗", "使用【汲取】一次获得3片贤者碎晶", 4),
     AchievementDefinition("win_one_attribute_score_only", "老大我们这样买卡真的能赢吗", "仅通过某一属性的卡得分获得胜利", 8),
-    AchievementDefinition("win_wizard_score_only", "做题区", "仅通过大魔法师的认可得分获得胜利", 10),
+    # 保留旧存档 ID；现行条件改为单局获得五张魔法师卡，不要求获胜。
+    AchievementDefinition("win_wizard_score_only", "做题区", "一局内获得五张魔法师卡", 10),
     AchievementDefinition("win_dual_purchases_only", "金色的麦田", "只购买双属性卡赢得胜利", 8),
     AchievementDefinition("steal_five_point_card", "这么会偷全给你偷走得了呗", "使用【恶魔契约】偷走一张效果结算后价值5分的卡牌", 7),
     AchievementDefinition("hit_three_times", "怎么倒霉的总是我", "一局内被造成有效攻击三次", 8),

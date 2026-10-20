@@ -5,7 +5,7 @@ from collections import Counter
 from .models import Attribute, Player, WizardCard
 
 
-WIZARD_MARKET_SIZE = 3  # 每局开局公开的魔法师卡数量；获得后从剩余牌堆补充。
+WIZARD_MARKET_SIZE = 5  # 每局随机公开五张魔法师卡；获得后保留空位，不再补充。
 
 
 MAGICIAN_CARDS = (
