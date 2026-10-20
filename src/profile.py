@@ -67,6 +67,7 @@ class PlayerProfile:
     updated_at: str
     completed: list = field(default_factory=list)
     incomplete: list = field(default_factory=list)
+    tutorial_invitation_answered: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -79,6 +80,7 @@ class PlayerProfile:
                 "completed": self.completed,
                 "incomplete": self.incomplete,
             },
+            "tutorial_invitation_answered": self.tutorial_invitation_answered,
         }
 
 
@@ -112,9 +114,15 @@ class ProfileStore:
                 isinstance(achievements.get(key), list) for key in ("completed", "incomplete")
             ):
                 raise ValueError("成就字段无效")
+            # Existing accounts predate the tutorial invitation. Treat them as
+            # answered so an upgrade does not unexpectedly interrupt login.
+            tutorial_invitation_answered = data.get("tutorial_invitation_answered", True)
+            if not isinstance(tutorial_invitation_answered, bool):
+                raise ValueError("新手教程邀请状态无效")
             return PlayerProfile(
                 player_id, nickname, created_at, updated_at,
                 achievements["completed"], achievements["incomplete"],
+                tutorial_invitation_answered,
             )
         except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, ProfileError) as error:
             raise ProfileError(f"账号文件 {path.name} 无法读取或内容损坏：{error}") from error

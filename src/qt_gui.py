@@ -53,6 +53,7 @@ from .profile import PlayerProfile, ProfileError, ProfileStore
 from .rules import RuleError, create_state, payment_for
 from .seeding import create_rng, generate_random_seed, seed_description
 from .specializations import STAGE_NAMES, legal_card_targets, legal_player_targets, single_attribute_count, specialization_name
+from .tutorial import HINTS, TUTORIAL_INTRO, select_tutorial_hint
 from .wizards import WIZARD_MARKET_SIZE
 from .theme import (
     ACTION_BUTTON_BACKGROUND, ACTION_BUTTON_TEXT_COLOR,
@@ -719,6 +720,40 @@ class AchievementToast(QFrame):
         self.set_accent_color(accent)
         self.title_label.setText(f"{definition.rarity}成就达成")
         self.name_label.setText(definition.name)
+
+
+class TutorialHintToast(QFrame):
+    """覆盖在牌桌上的持续提示；玩家完成行动后由对局流程收起。"""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("tutorialHintToast")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setFixedSize(300, 190)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(6)
+        self.title_label = QLabel()
+        self.title_label.setObjectName("tutorialHintToastTitle")
+        self.body_label = QLabel()
+        self.body_label.setObjectName("tutorialHintToastBody")
+        self.body_label.setWordWrap(True)
+        self.body_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.body_label, 1)
+        self.setStyleSheet(
+            f"QFrame#tutorialHintToast {{ background:{TEXT_COLOR}; "
+            f"border:2px solid {ORNAMENT_ACCENT_COLOR}; border-radius:8px; }}"
+            f"QLabel#tutorialHintToastTitle {{ color:{ORNAMENT_ACCENT_COLOR}; "
+            "background:transparent; border:0; font-size:16px; font-weight:bold; }"
+            f"QLabel#tutorialHintToastBody {{ color:{PANEL_COLOR}; "
+            "background:transparent; border:0; font-size:13px; }"
+        )
+
+    def set_hint(self, title: str, body: str) -> None:
+        self.title_label.setText(title)
+        self.body_label.setText(body)
 
 
 class TurnBannerOverlay(QWidget):
@@ -2318,6 +2353,13 @@ class MagicGemsQtApp(QMainWindow):
         self.profile_store = profile_store if profile_store is not None else ProfileStore()
         self.active_profile: PlayerProfile | None = None
         self.achievement_tracker: AchievementTracker | None = None
+        self.tutorial_mode = False
+        self.tutorial_intro_pending = False
+        self.tutorial_hint_counts: dict[str, int] = {}
+        self.tutorial_wizard_hint_pending = False
+        self.tutorial_prompted_turns: set[tuple[int, int]] = set()
+        self.pending_tutorial_turn: tuple[int, int] | None = None
+        self.pending_tutorial_invitation_player_id: str | None = None
         self.achievement_toast_queue = []
         self.achievement_toast_animation: QSequentialAnimationGroup | None = None
         deck_rng = create_rng(self.seed, self.seed_mode)
@@ -2350,6 +2392,12 @@ class MagicGemsQtApp(QMainWindow):
         self.ai_timer = QTimer(self)
         self.ai_timer.setSingleShot(True)
         self.ai_timer.timeout.connect(self.play_ai_turn)
+        self.tutorial_invitation_timer = QTimer(self)
+        self.tutorial_invitation_timer.setSingleShot(True)
+        self.tutorial_invitation_timer.timeout.connect(self.offer_tutorial_invitation)
+        self.tutorial_hint_timer = QTimer(self)
+        self.tutorial_hint_timer.setSingleShot(True)
+        self.tutorial_hint_timer.timeout.connect(self.try_show_tutorial_hint)
         self.specialization_scheduled = False
         self.specialization_retry_timer = QTimer(self)
         self.specialization_retry_timer.setSingleShot(True)
@@ -2422,6 +2470,8 @@ class MagicGemsQtApp(QMainWindow):
         self.animation_stage.setGeometry(self.rect())
         self.achievement_toast = AchievementToast(self)
         self.achievement_toast.hide()
+        self.tutorial_hint_toast = TutorialHintToast(self)
+        self.tutorial_hint_toast.hide()
         self.player_hover_card = PlayerStatusHoverCard(self)
         self.player_hover_card.installEventFilter(self)
         # Child widgets become visible with the main window unless explicitly
@@ -2703,11 +2753,85 @@ class MagicGemsQtApp(QMainWindow):
                 QMessageBox.Icon.Warning, "成就档案未能更新", achievement_error,
                 QMessageBox.StandardButton.Ok,
             )
+        if not profile.tutorial_invitation_answered:
+            self.pending_tutorial_invitation_player_id = profile.player_id
+            self.tutorial_invitation_timer.start(0)
+
+    def offer_tutorial_invitation(self) -> None:
+        """Invite a new account once, while keeping the choice in its profile."""
+        player_id = getattr(self, "pending_tutorial_invitation_player_id", None)
+        self.pending_tutorial_invitation_player_id = None
+        profile = self.active_profile
+        if (
+            profile is None
+            or profile.player_id != player_id
+            or profile.tutorial_invitation_answered
+            or self.pages.currentWidget() is not self.title_page
+        ):
+            return
+
+        dialog = QDialog(self)
+        dialog.setObjectName("tutorialInvitationDialog")
+        dialog.setWindowTitle("新手教程")
+        dialog.setStyleSheet(self.popup_dialog_stylesheet())
+        dialog.setFont(QFont(self.ui_font_family))
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
+        heading = QLabel("要开始新手教程吗？")
+        heading.setObjectName("tutorialInvitationHeading")
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        heading.setStyleSheet(f"font-size:18px;font-weight:bold;color:{TEXT_COLOR};background:transparent;border:0;")
+        layout.addWidget(heading)
+        description = QLabel("在一场独立的简单 AI 对局中熟悉资源、宠物卡和回合规则。你可以自由选择行动，也可以随时返回首页。")
+        description.setObjectName("tutorialInvitationDescription")
+        description.setWordWrap(True)
+        description.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        description.setStyleSheet(f"font-size:13px;color:{TEXT_COLOR};background:transparent;border:0;")
+        layout.addWidget(description)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        start_button = QPushButton("开始教程")
+        start_button.setObjectName("tutorialInvitationStartButton")
+        later_button = QPushButton("暂不体验")
+        later_button.setObjectName("tutorialInvitationLaterButton")
+        start_button.clicked.connect(dialog.accept)
+        later_button.clicked.connect(dialog.reject)
+        buttons.addWidget(start_button)
+        buttons.addWidget(later_button)
+        layout.addLayout(buttons)
+        self.style_popup_buttons(dialog)
+        dialog.setFixedSize(480, 220)
+
+        start_tutorial = dialog.exec() == QDialog.DialogCode.Accepted
+        if self.active_profile is not profile:
+            return
+        self.mark_tutorial_invitation_answered(profile)
+        if start_tutorial:
+            self.start_tutorial_match()
+
+    def mark_tutorial_invitation_answered(self, profile: PlayerProfile | None = None) -> None:
+        profile = profile or self.active_profile
+        if profile is None or profile.tutorial_invitation_answered:
+            return
+        self.tutorial_invitation_timer.stop()
+        self.pending_tutorial_invitation_player_id = None
+        profile.tutorial_invitation_answered = True
+        try:
+            self.profile_store.save(profile)
+        except ProfileError as error:
+            profile.tutorial_invitation_answered = False
+            self.show_themed_message(
+                QMessageBox.Icon.Warning, "教程邀请状态未能保存", str(error),
+                QMessageBox.StandardButton.Ok,
+            )
 
     def logout_profile(self) -> None:
         """从首页设置退出当前账号，但保留其本机档案供再次登录。"""
         if self.pages.currentWidget() is not self.title_settings_page:
             return
+        self.tutorial_invitation_timer.stop()
+        self.pending_tutorial_invitation_player_id = None
         self.active_profile = None
         self.achievement_tracker = None
         self.title_settings_profile_label.setText("当前玩家：未登录")
@@ -2733,6 +2857,7 @@ class MagicGemsQtApp(QMainWindow):
         button_font.setBold(True)
         options = (
             ("开始游戏", "titleSinglePlayerButton", self.start_single_player),
+            ("新手教程", "titleTutorialButton", self.start_tutorial_match),
             ("规则介绍", "titleRulesButton", self.show_title_rules_menu_page),
             ("设置", "titleSettingsButton", self.show_title_settings_page),
             ("退出游戏", "titleQuitButton", self.close),
@@ -3159,6 +3284,8 @@ class MagicGemsQtApp(QMainWindow):
         self.render_players()
 
     def current_mode_text(self) -> str:
+        if self.tutorial_mode:
+            return "新手教程 · 简单 AI"
         if self.ai_battle:
             if self.deepseek_all:
                 return "四 DeepSeek 对战"
@@ -3167,10 +3294,31 @@ class MagicGemsQtApp(QMainWindow):
         return f"单人 · {difficulty}模式"
 
     def start_game_with_difficulty(self, difficulty: str) -> None:
+        self.start_single_player_match(difficulty, tutorial=False)
+
+    def start_tutorial_match(self) -> None:
+        """Start a separate random match with the simple opponents."""
+        self.mark_tutorial_invitation_answered()
+        self.start_single_player_match("simple", tutorial=True)
+
+    def start_single_player_match(self, difficulty: str, *, tutorial: bool) -> None:
         if self.active_profile is None:
             self.pages.setCurrentWidget(self.profile_page)
             return
+        self.tutorial_mode = tutorial
+        self.tutorial_intro_pending = tutorial
+        self.tutorial_hint_counts.clear()
+        self.tutorial_wizard_hint_pending = False
+        self.tutorial_prompted_turns.clear()
+        self.pending_tutorial_turn = None
+        self.tutorial_hint_timer.stop()
+        self.tutorial_hint_toast.hide()
         self.ai_difficulty = "simple" if difficulty == "simple" else "hard"
+        if tutorial:
+            # A tutorial match always gets its own random setup, even when the
+            # GUI was launched with a fixed seed for another match.
+            self._initial_seed_available = False
+            self._needs_new_match = True
         starting_new_match = self._needs_new_match
         if starting_new_match:
             self.begin_new_match()
@@ -3180,7 +3328,10 @@ class MagicGemsQtApp(QMainWindow):
         self.background_music.start()
         if starting_new_match:
             self.game_started = True
-            self.log(f"单人模式：{'简单' if self.ai_difficulty == 'simple' else '困难'}")
+            if tutorial:
+                self.log("新手教程教学对局开始（简单 AI）")
+            else:
+                self.log(f"单人模式：{'简单' if self.ai_difficulty == 'simple' else '困难'}")
             self.log(f"对局开始，{seed_description(self.seed, self.seed_mode)}")
             self.enqueue_turn_banner()
 
@@ -3202,7 +3353,7 @@ class MagicGemsQtApp(QMainWindow):
         self.game = Game(create_state(self.create_players(), build_decks(rng=deck_rng), self.seed, rng=state_rng))
         self.achievement_tracker = (
             AchievementTracker(self.active_profile, self.profile_store, self.ai_difficulty)
-            if not self.ai_battle and self.active_profile is not None
+            if not self.ai_battle and not self.tutorial_mode and self.active_profile is not None
             else None
         )
         self._needs_new_match = False
@@ -3215,6 +3366,8 @@ class MagicGemsQtApp(QMainWindow):
         self.log_messages.clear()
         self.log_view.clear()
         self.start_game_log()
+        if self.tutorial_mode:
+            self.log("新手教程教学对局")
         self.refresh()
 
     def show_settings(self) -> None:
@@ -3439,7 +3592,7 @@ class MagicGemsQtApp(QMainWindow):
         )
 
     def show_specialization_rules(self) -> None:
-        """Show all current specialization rules in a non-scrolling dialog."""
+        """Show all specialization rules with scrolling when the screen is short."""
 
         dialog = QDialog(self)
         dialog.setObjectName("specializationRulesDialog")
@@ -3466,7 +3619,18 @@ class MagicGemsQtApp(QMainWindow):
         )
         outer.addWidget(intro)
 
+        scroll = QScrollArea()
+        scroll.setObjectName("specializationRulesScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            "QScrollArea#specializationRulesScroll { background:transparent; border:0; }"
+        )
+        scroll.viewport().setStyleSheet("background:transparent; border:0;")
         content = QWidget()
+        content.setObjectName("specializationRulesContent")
+        content.setStyleSheet("background:transparent; border:0;")
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(2, 2, 2, 2)
         content_layout.setSpacing(5)
@@ -3498,7 +3662,8 @@ class MagicGemsQtApp(QMainWindow):
             content_layout.addWidget(panel)
 
         content_layout.addStretch(1)
-        outer.addWidget(content, 1)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
 
         close_button = QPushButton("关闭")
         close_button.setFixedWidth(88)
@@ -6919,6 +7084,8 @@ class MagicGemsQtApp(QMainWindow):
             previous_duals = actor_player.dual_cards()
             previous_wizards = tuple(actor_player.wizard_cards)
             messages = self.game.execute(action)
+            if self.tutorial_mode:
+                self.tutorial_hint_toast.hide()
             unlocked_achievements: list[str] = []
             achievement_save_error = None
             if self.achievement_tracker is not None:
@@ -7029,6 +7196,14 @@ class MagicGemsQtApp(QMainWindow):
                 wizard for wizard in actor_player.wizard_cards
                 if wizard.card_id not in previous_wizard_ids
             ]
+            if (
+                self.tutorial_mode
+                and impact_snapshot["current_player"] == 0
+                and acquired_wizards
+            ):
+                # Keep this reminder through the remaining AI turns so the
+                # next human-turn prompt explains the card just earned.
+                self.tutorial_wizard_hint_pending = True
             self.pending_wizard_acquisition_ids.update(
                 wizard.card_id for wizard in acquired_wizards
             )
@@ -7419,6 +7594,91 @@ class MagicGemsQtApp(QMainWindow):
         self.turn_animation = None
         self.play_next_impact_animation()
         self.sync_interaction_lock()
+        self.schedule_tutorial_hint_for_current_turn()
+
+    def schedule_tutorial_hint_for_current_turn(self) -> None:
+        """Queue one reminder after the human turn's animations and effects."""
+        if not self.tutorial_mode or not self.game_started or self.game.state.finished:
+            return
+        if self.game.state.current_player != 0:
+            return
+        turn_key = (self.game.state.round_number, self.game.state.current_player)
+        if turn_key in self.tutorial_prompted_turns:
+            return
+        self.pending_tutorial_turn = turn_key
+        if not self.tutorial_hint_timer.isActive():
+            self.tutorial_hint_timer.start(0)
+
+    def try_show_tutorial_hint(self) -> None:
+        turn_key = self.pending_tutorial_turn
+        if turn_key is None:
+            return
+        if (
+            not self.tutorial_mode
+            or not self.game_started
+            or self.game.state.finished
+            or (self.game.state.round_number, self.game.state.current_player) != turn_key
+            or self.game.state.current_player != 0
+        ):
+            self.pending_tutorial_turn = None
+            return
+        if (
+            self.has_active_animations()
+            or self.game.state.pending_specializations
+            or self.specialization_dialog is not None
+        ):
+            self.tutorial_hint_timer.start(80)
+            return
+
+        self.pending_tutorial_turn = None
+        self.tutorial_prompted_turns.add(turn_key)
+        if self.tutorial_intro_pending:
+            self.tutorial_intro_pending = False
+            self.show_tutorial_hint_overlay(TUTORIAL_INTRO.title, TUTORIAL_INTRO.body)
+            return
+        if self.tutorial_wizard_hint_pending:
+            hint = HINTS["wizard"]
+            self.tutorial_wizard_hint_pending = False
+        else:
+            hint = select_tutorial_hint(self.game.state, self.tutorial_hint_counts)
+        self.tutorial_hint_counts[hint.topic] = self.tutorial_hint_counts.get(hint.topic, 0) + 1
+        self.show_tutorial_hint_overlay(hint.title, hint.body)
+
+    def show_tutorial_hint_overlay(self, title: str, body: str) -> None:
+        """Show a table overlay until the player completes an action."""
+        toast = self.tutorial_hint_toast
+        toast.set_hint(title, body)
+        market = self.market_layout.parentWidget()
+        market_origin = market.mapTo(self, QPoint(0, 0))
+        card_widgets = [
+            widget
+            for widgets in self.market_buttons.values()
+            for widget in widgets
+            if not widget.isHidden()
+        ]
+        card_widgets.extend(
+            widget
+            for widget in self.wizard_market_views
+            if isinstance(widget, QWidget) and not widget.isHidden()
+        )
+        last_card_edge = max(
+            (
+                widget.mapTo(self, QPoint(0, 0)).x() + widget.width()
+                for widget in card_widgets
+            ),
+            default=market_origin.x(),
+        )
+        market_right_edge = market_origin.x() + market.width()
+        toast_x = last_card_edge + 8
+        toast_right = market_right_edge - 8
+        if toast_x + toast.width() > toast_right:
+            toast_x = toast_right - toast.width()
+        # Leave a clear gap below the specialization help button so the hint
+        # overlay does not look like content opened by that button.
+        toast_y = market_origin.y() + 72
+        toast.move(toast_x, toast_y)
+        toast.show()
+        toast.raise_()
 
     def show_end_dialog(self) -> None:
         if self.end_dialog_shown or not self.game.state.finished:
@@ -7470,7 +7730,7 @@ class MagicGemsQtApp(QMainWindow):
         panel_layout.setContentsMargins(20, 18, 20, 18)
         panel_layout.setSpacing(14)
 
-        title = QLabel("对局结束")
+        title = QLabel("教学对局结束" if self.tutorial_mode else "对局结束")
         title.setObjectName("endGameTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         panel_layout.addWidget(title)
@@ -7591,6 +7851,11 @@ class MagicGemsQtApp(QMainWindow):
 
     def restart(self, *, announce: bool = True) -> None:
         self.stop_match_flow()
+        self.tutorial_intro_pending = self.tutorial_mode
+        self.tutorial_hint_counts.clear()
+        self.tutorial_wizard_hint_pending = False
+        self.tutorial_prompted_turns.clear()
+        self.pending_tutorial_turn = None
         new_seed = generate_random_seed()
         while new_seed == self.seed:
             new_seed = generate_random_seed()
@@ -7617,6 +7882,9 @@ class MagicGemsQtApp(QMainWindow):
     def stop_match_flow(self) -> None:
         """停止本局所有计时器和动画，供重新开局、返回标题时共用。"""
         self.ai_timer.stop()
+        self.tutorial_hint_timer.stop()
+        self.pending_tutorial_turn = None
+        self.tutorial_wizard_hint_pending = False
         if self.achievement_toast_animation is not None:
             self.achievement_toast_animation.stop()
             self.achievement_toast_animation.deleteLater()
@@ -7624,6 +7892,7 @@ class MagicGemsQtApp(QMainWindow):
         self.achievement_toast_queue.clear()
         self.achievement_toast.hide()
         self.achievement_toast.move(-self.achievement_toast.width() - 8, 22)
+        self.tutorial_hint_toast.hide()
         if self.deepseek_future is not None:
             self.deepseek_future.cancel()
             self.deepseek_future = None
@@ -7707,6 +7976,12 @@ class MagicGemsQtApp(QMainWindow):
         self.log_messages.clear()
         self.log_view.clear()
         self.game_started = False
+        self.tutorial_mode = False
+        self.tutorial_intro_pending = False
+        self.tutorial_hint_counts.clear()
+        self.tutorial_wizard_hint_pending = False
+        self.tutorial_prompted_turns.clear()
+        self.pending_tutorial_turn = None
         self.ai_battle = False
         self.deepseek_player = None
         self.deepseek_all = False
@@ -7716,6 +7991,9 @@ class MagicGemsQtApp(QMainWindow):
             self.deepseek_executor = None
         self._needs_new_match = True
         self.pages.setCurrentWidget(self.title_page)
+        if self.active_profile is not None and not self.active_profile.tutorial_invitation_answered:
+            self.pending_tutorial_invitation_player_id = self.active_profile.player_id
+            self.tutorial_invitation_timer.start(0)
 
     def confirm_return_to_title(self, *, allow_during_animation: bool = False) -> None:
         if self.interaction_locked and not allow_during_animation:
@@ -7731,6 +8009,8 @@ class MagicGemsQtApp(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.ai_timer.stop()
+        self.tutorial_invitation_timer.stop()
+        self.tutorial_hint_timer.stop()
         if self.deepseek_executor is not None:
             self.deepseek_executor.shutdown(wait=False, cancel_futures=True)
             self.deepseek_executor = None
