@@ -53,7 +53,7 @@ from .profile import PlayerProfile, ProfileError, ProfileStore
 from .rules import RuleError, create_state, payment_for
 from .seeding import create_rng, generate_random_seed, seed_description
 from .specializations import STAGE_NAMES, legal_card_targets, legal_player_targets, single_attribute_count, specialization_name
-from .tutorial import HINTS, TUTORIAL_INTRO, select_tutorial_hint
+from .tutorial import TutorialGuide, can_purchase_card
 from .wizards import WIZARD_MARKET_SIZE
 from .theme import (
     ACTION_BUTTON_BACKGROUND, ACTION_BUTTON_TEXT_COLOR,
@@ -725,12 +725,13 @@ class AchievementToast(QFrame):
 class TutorialHintToast(QFrame):
     """覆盖在牌桌上的持续提示；玩家完成行动后由对局流程收起。"""
 
+    page_requested = Signal(int)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("tutorialHintToast")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.setFixedSize(300, 190)
+        self.setFixedSize(300, 218)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(6)
@@ -739,9 +740,24 @@ class TutorialHintToast(QFrame):
         self.body_label = QLabel()
         self.body_label.setObjectName("tutorialHintToastBody")
         self.body_label.setWordWrap(True)
-        self.body_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.body_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         layout.addWidget(self.title_label)
         layout.addWidget(self.body_label, 1)
+        navigation = QHBoxLayout()
+        navigation.setSpacing(6)
+        self.previous_button = QPushButton("上一页")
+        self.previous_button.setObjectName("tutorialPreviousButton")
+        self.previous_button.clicked.connect(lambda: self.page_requested.emit(-1))
+        self.page_label = QLabel()
+        self.page_label.setObjectName("tutorialPageLabel")
+        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.next_button = QPushButton("下一页")
+        self.next_button.setObjectName("tutorialNextButton")
+        self.next_button.clicked.connect(lambda: self.page_requested.emit(1))
+        navigation.addWidget(self.previous_button)
+        navigation.addWidget(self.page_label, 1)
+        navigation.addWidget(self.next_button)
+        layout.addLayout(navigation)
         self.setStyleSheet(
             f"QFrame#tutorialHintToast {{ background:{TEXT_COLOR}; "
             f"border:2px solid {ORNAMENT_ACCENT_COLOR}; border-radius:8px; }}"
@@ -749,11 +765,21 @@ class TutorialHintToast(QFrame):
             "background:transparent; border:0; font-size:16px; font-weight:bold; }"
             f"QLabel#tutorialHintToastBody {{ color:{PANEL_COLOR}; "
             "background:transparent; border:0; font-size:13px; }"
+            f"QLabel#tutorialPageLabel {{ color:{PANEL_COLOR}; "
+            "background:transparent; border:0; font-size:12px; }"
+            f"QPushButton#tutorialPreviousButton, QPushButton#tutorialNextButton {{ "
+            f"background:{PANEL_COLOR}; color:{TEXT_COLOR}; "
+            f"border:1px solid {ORNAMENT_ACCENT_COLOR}; border-radius:4px; "
+            "font-size:12px; padding:3px 6px; }"
+            "QPushButton:disabled { opacity:0.5; }"
         )
 
-    def set_hint(self, title: str, body: str) -> None:
+    def set_hint(self, title: str, body: str, page_index: int, page_count: int) -> None:
         self.title_label.setText(title)
         self.body_label.setText(body)
+        self.page_label.setText(f"{page_index + 1} / {page_count}")
+        self.previous_button.setEnabled(page_index > 0)
+        self.next_button.setEnabled(page_index + 1 < page_count)
 
 
 class TurnBannerOverlay(QWidget):
@@ -2354,9 +2380,7 @@ class MagicGemsQtApp(QMainWindow):
         self.active_profile: PlayerProfile | None = None
         self.achievement_tracker: AchievementTracker | None = None
         self.tutorial_mode = False
-        self.tutorial_intro_pending = False
-        self.tutorial_hint_counts: dict[str, int] = {}
-        self.tutorial_wizard_hint_pending = False
+        self.tutorial_guide = TutorialGuide()
         self.tutorial_prompted_turns: set[tuple[int, int]] = set()
         self.pending_tutorial_turn: tuple[int, int] | None = None
         self.pending_tutorial_invitation_player_id: str | None = None
@@ -2471,6 +2495,7 @@ class MagicGemsQtApp(QMainWindow):
         self.achievement_toast = AchievementToast(self)
         self.achievement_toast.hide()
         self.tutorial_hint_toast = TutorialHintToast(self)
+        self.tutorial_hint_toast.page_requested.connect(self.turn_tutorial_page)
         self.tutorial_hint_toast.hide()
         self.player_hover_card = PlayerStatusHoverCard(self)
         self.player_hover_card.installEventFilter(self)
@@ -2857,7 +2882,6 @@ class MagicGemsQtApp(QMainWindow):
         button_font.setBold(True)
         options = (
             ("开始游戏", "titleSinglePlayerButton", self.start_single_player),
-            ("新手教程", "titleTutorialButton", self.start_tutorial_match),
             ("规则介绍", "titleRulesButton", self.show_title_rules_menu_page),
             ("设置", "titleSettingsButton", self.show_title_settings_page),
             ("退出游戏", "titleQuitButton", self.close),
@@ -2949,12 +2973,13 @@ class MagicGemsQtApp(QMainWindow):
         return button
 
     def build_title_rules_menu_page(self) -> QWidget:
-        """首页规则入口先展示规则介绍与属性专精两个分支。"""
+        """首页规则入口集中展示规则、专精与可重开的教程。"""
         page, layout = self.reference_page_shell("规则介绍", "titleRulesMenuPage")
         layout.addStretch(2)
         for text, object_name, callback in (
             ("规则介绍", "titleRulesMenuGameButton", self.show_title_rules_page),
             ("属性专精细则", "titleRulesMenuSpecializationButton", self.show_title_specialization_page),
+            ("新手教程", "titleRulesMenuTutorialButton", self.start_tutorial_match),
         ):
             button = self.reference_page_button(text, object_name, callback)
             layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -3306,9 +3331,7 @@ class MagicGemsQtApp(QMainWindow):
             self.pages.setCurrentWidget(self.profile_page)
             return
         self.tutorial_mode = tutorial
-        self.tutorial_intro_pending = tutorial
-        self.tutorial_hint_counts.clear()
-        self.tutorial_wizard_hint_pending = False
+        self.tutorial_guide = TutorialGuide()
         self.tutorial_prompted_turns.clear()
         self.pending_tutorial_turn = None
         self.tutorial_hint_timer.stop()
@@ -3353,7 +3376,7 @@ class MagicGemsQtApp(QMainWindow):
         self.game = Game(create_state(self.create_players(), build_decks(rng=deck_rng), self.seed, rng=state_rng))
         self.achievement_tracker = (
             AchievementTracker(self.active_profile, self.profile_store, self.ai_difficulty)
-            if not self.ai_battle and not self.tutorial_mode and self.active_profile is not None
+            if not self.ai_battle and self.active_profile is not None
             else None
         )
         self._needs_new_match = False
@@ -7083,9 +7106,29 @@ class MagicGemsQtApp(QMainWindow):
             specialization_attribute = specialization_effect.attribute if specialization_effect else None
             previous_duals = actor_player.dual_cards()
             previous_wizards = tuple(actor_player.wizard_cards)
+            local_player = self.game.state.players[0]
+            previous_local_purchased_ids = {card.card_id for card, _ in local_player.purchased}
+            previous_local_wizard_ids = {wizard.card_id for wizard in local_player.wizard_cards}
             messages = self.game.execute(action)
             if self.tutorial_mode:
                 self.tutorial_hint_toast.hide()
+                if impact_snapshot["current_player"] == 0 and action.kind == "buy":
+                    self.unlock_tutorial_hint("buy")
+                if any(
+                    card.card_id not in previous_local_purchased_ids
+                    for card, _ in local_player.purchased
+                ):
+                    self.unlock_tutorial_hint("discount")
+                if any(
+                    event.event_type == "specialization_triggered" and event.actor_index == 0
+                    for event in self.game.last_events
+                ):
+                    self.unlock_tutorial_hint("specialization")
+                if any(
+                    wizard.card_id not in previous_local_wizard_ids
+                    for wizard in local_player.wizard_cards
+                ):
+                    self.unlock_tutorial_hint("wizard")
             unlocked_achievements: list[str] = []
             achievement_save_error = None
             if self.achievement_tracker is not None:
@@ -7196,14 +7239,6 @@ class MagicGemsQtApp(QMainWindow):
                 wizard for wizard in actor_player.wizard_cards
                 if wizard.card_id not in previous_wizard_ids
             ]
-            if (
-                self.tutorial_mode
-                and impact_snapshot["current_player"] == 0
-                and acquired_wizards
-            ):
-                # Keep this reminder through the remaining AI turns so the
-                # next human-turn prompt explains the card just earned.
-                self.tutorial_wizard_hint_pending = True
             self.pending_wizard_acquisition_ids.update(
                 wizard.card_id for wizard in acquired_wizards
             )
@@ -7597,7 +7632,7 @@ class MagicGemsQtApp(QMainWindow):
         self.schedule_tutorial_hint_for_current_turn()
 
     def schedule_tutorial_hint_for_current_turn(self) -> None:
-        """Queue one reminder after the human turn's animations and effects."""
+        """Show the guide once the human turn is ready for input."""
         if not self.tutorial_mode or not self.game_started or self.game.state.finished:
             return
         if self.game.state.current_player != 0:
@@ -7626,28 +7661,37 @@ class MagicGemsQtApp(QMainWindow):
             self.has_active_animations()
             or self.game.state.pending_specializations
             or self.specialization_dialog is not None
+            or self.achievement_toast_animation is not None
+            or self.achievement_toast_queue
         ):
             self.tutorial_hint_timer.start(80)
             return
 
+        if can_purchase_card(self.game.state):
+            self.unlock_tutorial_hint("buy")
         self.pending_tutorial_turn = None
         self.tutorial_prompted_turns.add(turn_key)
-        if self.tutorial_intro_pending:
-            self.tutorial_intro_pending = False
-            self.show_tutorial_hint_overlay(TUTORIAL_INTRO.title, TUTORIAL_INTRO.body)
-            return
-        if self.tutorial_wizard_hint_pending:
-            hint = HINTS["wizard"]
-            self.tutorial_wizard_hint_pending = False
-        else:
-            hint = select_tutorial_hint(self.game.state, self.tutorial_hint_counts)
-        self.tutorial_hint_counts[hint.topic] = self.tutorial_hint_counts.get(hint.topic, 0) + 1
-        self.show_tutorial_hint_overlay(hint.title, hint.body)
+        self.show_tutorial_hint_overlay()
 
-    def show_tutorial_hint_overlay(self, title: str, body: str) -> None:
-        """Show a table overlay until the player completes an action."""
+    def unlock_tutorial_hint(self, topic: str) -> None:
+        if self.tutorial_mode and self.tutorial_guide.unlock(topic):
+            if self.tutorial_hint_toast.isVisible():
+                self.show_tutorial_hint_overlay()
+
+    def turn_tutorial_page(self, step: int) -> None:
+        if not self.tutorial_mode or not self.tutorial_hint_toast.isVisible():
+            return
+        self.tutorial_guide.turn_page(step)
+        self.show_tutorial_hint_overlay()
+
+    def show_tutorial_hint_overlay(self) -> None:
+        """Show the selected guide page until the player completes an action."""
         toast = self.tutorial_hint_toast
-        toast.set_hint(title, body)
+        hint = self.tutorial_guide.current_hint
+        toast.set_hint(
+            hint.title, hint.body,
+            self.tutorial_guide.page_index, len(self.tutorial_guide.topics),
+        )
         market = self.market_layout.parentWidget()
         market_origin = market.mapTo(self, QPoint(0, 0))
         card_widgets = [
@@ -7851,9 +7895,7 @@ class MagicGemsQtApp(QMainWindow):
 
     def restart(self, *, announce: bool = True) -> None:
         self.stop_match_flow()
-        self.tutorial_intro_pending = self.tutorial_mode
-        self.tutorial_hint_counts.clear()
-        self.tutorial_wizard_hint_pending = False
+        self.tutorial_guide = TutorialGuide()
         self.tutorial_prompted_turns.clear()
         self.pending_tutorial_turn = None
         new_seed = generate_random_seed()
@@ -7864,6 +7906,11 @@ class MagicGemsQtApp(QMainWindow):
         deck_rng = create_rng(self.seed, self.seed_mode)
         state_rng = create_rng(self.seed, self.seed_mode)
         self.game = Game(create_state(self.create_players(), build_decks(rng=deck_rng), self.seed, rng=state_rng))
+        self.achievement_tracker = (
+            AchievementTracker(self.active_profile, self.profile_store, self.ai_difficulty)
+            if not self.ai_battle and self.active_profile is not None
+            else None
+        )
         self._needs_new_match = False
         self.dual_move_order.clear()
         self.dual_move_sequence = 0
@@ -7884,7 +7931,6 @@ class MagicGemsQtApp(QMainWindow):
         self.ai_timer.stop()
         self.tutorial_hint_timer.stop()
         self.pending_tutorial_turn = None
-        self.tutorial_wizard_hint_pending = False
         if self.achievement_toast_animation is not None:
             self.achievement_toast_animation.stop()
             self.achievement_toast_animation.deleteLater()
@@ -7977,9 +8023,7 @@ class MagicGemsQtApp(QMainWindow):
         self.log_view.clear()
         self.game_started = False
         self.tutorial_mode = False
-        self.tutorial_intro_pending = False
-        self.tutorial_hint_counts.clear()
-        self.tutorial_wizard_hint_pending = False
+        self.tutorial_guide = TutorialGuide()
         self.tutorial_prompted_turns.clear()
         self.pending_tutorial_turn = None
         self.ai_battle = False
