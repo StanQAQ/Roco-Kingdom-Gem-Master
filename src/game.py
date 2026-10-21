@@ -22,7 +22,10 @@ class Action:
 
 
 class Game:
-    def __init__(self, state: GameState):
+    def __init__(self, state: GameState, *, target_score: int = VICTORY_SCORE, max_rounds: int | None = None):
+        self.target_score = target_score
+        self.max_rounds = max_rounds
+        self.round_limit_reached = False
         self.state = state
         self.match_id = uuid4().hex
         self._event_sequence = 0
@@ -282,7 +285,7 @@ class Game:
             # 领取后永久保留空位，右侧卡片不移动，也不会补入新卡。
             self.state.wizard_market[wizard_index] = None
         market_exhausted = not any(self.state.market.cards[level] for level in (1, 2, 3))
-        if any(player.score >= VICTORY_SCORE for player in self.state.players):
+        if any(player.score >= self.target_score for player in self.state.players):
             self.state.end_triggered = True
         if market_exhausted:
             self.state.end_triggered = True
@@ -290,9 +293,15 @@ class Game:
         self.state.next_player()
         # 只有整轮结束时才结算。达标玩家若在本轮后续行动中失去分数，
         # 不具备获胜资格；若市场也未耗尽，则清除终局标记并继续游戏。
-        if self.state.end_triggered and self.state.current_player == 0:
-            has_eligible_winner = any(player.score >= VICTORY_SCORE for player in self.state.players)
-            self.state.finished = has_eligible_winner or self.state.market_exhausted_triggered
+        self.round_limit_reached = (
+            self.max_rounds is not None and self.state.round_number > self.max_rounds
+            and self.state.all_players_have_equal_actions()
+        )
+        if self.round_limit_reached:
+            self.state.finished = True
+        if self.state.end_triggered and self.state.all_players_have_equal_actions():
+            has_eligible_winner = any(player.score >= self.target_score for player in self.state.players)
+            self.state.finished = has_eligible_winner or self.state.market_exhausted_triggered or self.round_limit_reached
             if not self.state.finished:
                 self.state.end_triggered = False
         if self.state.finished:
@@ -308,7 +317,7 @@ class Game:
         return messages
 
     def winners(self) -> list[Player]:
-        eligible = [player for player in self.state.players if player.score >= VICTORY_SCORE]
+        eligible = [player for player in self.state.players if self.round_limit_reached or player.score >= self.target_score]
         if not eligible:
             return []
         highest = max(player.score for player in eligible)

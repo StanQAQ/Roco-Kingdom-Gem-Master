@@ -12,6 +12,7 @@ import math
 import os
 from pathlib import Path
 import re
+import random
 import shutil
 import subprocess
 import sys
@@ -21,11 +22,11 @@ import wave
 
 from PySide6.QtCore import (
     QEasingCurve, QEvent, QPoint, Property, QPauseAnimation, QRect, QRectF, Signal, Qt, QParallelAnimationGroup, QPropertyAnimation,
-    QSequentialAnimationGroup, QTimer,
+    QSequentialAnimationGroup, QSize, QTimer,
 )
 from PySide6.QtGui import (
     QBrush, QColor, QFont, QFontDatabase, QFontMetricsF,
-    QImage, QPainter, QPainterPath, QPalette, QPen, QPixmap, QTextCursor,
+    QImage, QIntValidator, QPainter, QPainterPath, QPalette, QPen, QPixmap, QTextCursor,
 )
 try:
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QSoundEffect
@@ -35,17 +36,17 @@ except (ImportError, OSError) as error:  # Qt Multimedia can be present but miss
     QSoundEffect = None
     QT_MULTIMEDIA_IMPORT_ERROR = str(error)
 from PySide6.QtWidgets import (
-    QAbstractButton, QApplication, QDialog, QFrame, QGridLayout, QHBoxLayout,
+    QAbstractButton, QApplication, QCheckBox, QComboBox, QDialog, QFrame, QGridLayout, QHBoxLayout,
     QGraphicsDropShadowEffect, QGraphicsOpacityEffect,
-    QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QScrollArea, QTextEdit,
-    QSizePolicy, QSlider, QStackedWidget, QStyle, QStyleOptionButton, QStylePainter, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QScrollArea, QTextEdit,
+    QSizePolicy, QSlider, QStackedWidget, QStyle, QStyleOptionComboBox, QStyleOptionButton, QStylePainter, QVBoxLayout, QWidget,
 )
 from PySide6.QtCore import QUrl
 
 from .ai import choose_action
 from .achievement_definitions import ACHIEVEMENTS, ACHIEVEMENTS_BY_DIFFICULTY
 from .achievement_tracker import AchievementTracker, sync_profile_achievements
-from .deepseek_ai import DeepSeekOpponent
+from .deepseek_ai import DeepSeekOpponent, configured_api_key
 from .cards import build_decks, name_for_card_id
 from .game import Action, Game
 from .models import ATTRIBUTES, Attribute, PetCard, Player, SpecializationEffect
@@ -224,6 +225,175 @@ def attribute_impact_mask_pixmap(attribute: Attribute) -> QPixmap:
         else:
             _ATTRIBUTE_IMPACT_MASK_PIXMAPS[attribute] = QPixmap()
     return _ATTRIBUTE_IMPACT_MASK_PIXMAPS[attribute]
+
+
+class SeedCheckBox(QCheckBox):
+    """Lay out the indicator and label together, without native style offsets."""
+
+    INDICATOR_SIZE = 16
+    TEXT_OFFSET = 25
+
+    def sizeHint(self) -> QSize:
+        metrics = self.fontMetrics()
+        return QSize(self.TEXT_OFFSET + metrics.horizontalAdvance(self.text()) + 2,
+                     max(self.INDICATOR_SIZE, metrics.height()) + 4)
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+    def hitButton(self, position) -> bool:
+        return self.rect().contains(position)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        indicator = QRectF(0, (self.height() - self.INDICATOR_SIZE) / 2,
+                           self.INDICATOR_SIZE, self.INDICATOR_SIZE)
+        painter.setPen(QPen(QColor(PANEL_BORDER_COLOR), 1))
+        painter.setBrush(QColor(HOVER_SURFACE_COLOR))
+        painter.drawRoundedRect(indicator.adjusted(.5, .5, -.5, -.5), 3, 3)
+        if self.isChecked():
+            pen = QPen(QColor(TEXT_COLOR), 2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            path = QPainterPath()
+            path.moveTo(indicator.left() + indicator.width() * .22, indicator.top() + indicator.height() * .51)
+            path.lineTo(indicator.left() + indicator.width() * .43, indicator.top() + indicator.height() * .72)
+            path.lineTo(indicator.left() + indicator.width() * .79, indicator.top() + indicator.height() * .28)
+            painter.drawPath(path)
+        painter.setPen(QColor(TEXT_COLOR))
+        painter.drawText(QRectF(self.TEXT_OFFSET, 0, self.width() - self.TEXT_OFFSET, self.height()),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, self.text())
+
+
+class TargetScoreInput(QLineEdit):
+    """A plain editable score field, independent of native spin-box subcontrols."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._value = 20
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.setValidator(QIntValidator(15, 50, self))
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setText("20")
+        self.editingFinished.connect(self.interpretText)
+
+    def value(self) -> int:
+        text = self.text().strip()
+        return min(50, max(15, int(text))) if text else self._value
+
+    def setValue(self, value: int) -> None:
+        self._value = min(50, max(15, value))
+        self.setText(str(self._value))
+
+    def stepBy(self, steps: int) -> None:
+        self.setValue(self.value() + steps)
+
+    def interpretText(self) -> None:
+        self.setValue(self.value())
+
+    def lineEdit(self) -> QLineEdit:
+        return self
+
+
+class CustomOptionsPopup(QWidget):
+    """Paint rounded popup edges over a transparent native window."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAutoFillBackground(False)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(PANEL_BORDER_COLOR), 1))
+        painter.setBrush(QColor(PANEL_COLOR))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 5, 5)
+
+
+class CustomOptionComboBox(QComboBox):
+    """Keep choices below the field, with its text hidden while choosing."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._popup_visible = False
+        self.options_popup = CustomOptionsPopup(self)
+        self.options_popup.setObjectName("customOptionsPopup")
+        self.options_popup.installEventFilter(self)
+        self.options_popup.setStyleSheet(
+            f"QListWidget {{ background:transparent;color:{TEXT_COLOR};border:0;outline:0;font-size:16px; }}"
+            "QListWidget::item { padding:6px 10px;border:0; }"
+            f"QListWidget::item:selected,QListWidget::item:hover {{ background:{HOVER_SURFACE_COLOR};color:{TEXT_COLOR}; }}"
+        )
+        layout = QVBoxLayout(self.options_popup)
+        layout.setContentsMargins(5, 5, 5, 5)
+        self.options_list = QListWidget()
+        self.options_list.viewport().setAutoFillBackground(False)
+        self.options_list.setMouseTracking(True)
+        self.options_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        layout.addWidget(self.options_list)
+        self.options_list.itemClicked.connect(self.choose_option)
+        self.options_list.itemActivated.connect(self.choose_option)
+
+    def choose_option(self, item) -> None:
+        index = self.options_list.row(item)
+        changed = index != self.currentIndex()
+        self.setCurrentIndex(index)
+        self.hidePopup()
+        if changed:
+            self.activated.emit(index)
+        self.setFocus(Qt.FocusReason.PopupFocusReason)
+
+    def showPopup(self) -> None:
+        self.options_list.clear()
+        for index in range(self.count()):
+            item = QListWidgetItem(self.itemText(index))
+            item.setSizeHint(self.size().expandedTo(item.sizeHint()))
+            self.options_list.addItem(item)
+        self.options_list.setCurrentRow(self.currentIndex())
+        position = self.mapToGlobal(QPoint(0, self.height() + 3))
+        height = self.count() * self.height() + 10
+        screen = self.screen()
+        if screen is not None:
+            height = min(height, max(40, screen.availableGeometry().bottom() - position.y()))
+        self.options_popup.setGeometry(position.x(), position.y(), self.width(), height)
+        self._popup_visible = True
+        self.update()
+        self.options_popup.show()
+        self.options_list.setFocus(Qt.FocusReason.PopupFocusReason)
+
+    def hidePopup(self) -> None:
+        self.options_popup.hide()
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.options_popup and event.type() == QEvent.Type.Hide:
+            self._popup_visible = False
+            self.update()
+        return super().eventFilter(watched, event)
+
+    def paintEvent(self, event) -> None:
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        if self._popup_visible:
+            option.currentText = ""
+        base = QStylePainter(self)
+        base.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+        base.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
+        base.end()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(PANEL_BORDER_COLOR), 1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        x, y = self.width() - 16, self.height() / 2
+        path = QPainterPath()
+        path.moveTo(x - 4, y - 2)
+        path.lineTo(x, y + 2)
+        path.lineTo(x + 4, y - 2)
+        painter.drawPath(path)
 
 
 class CardButton(QPushButton):
@@ -2375,6 +2545,9 @@ class MagicGemsQtApp(QMainWindow):
         self.deepseek_executor = ThreadPoolExecutor(max_workers=1) if self.deepseek_opponents else None
         self.deepseek_future = None
         self.deepseek_game = None
+        self.custom_mode = False
+        self.custom_settings = None
+        self.player_action_order = 1
         self.ai_difficulty = "hard"
         self.profile_store = profile_store if profile_store is not None else ProfileStore()
         self.active_profile: PlayerProfile | None = None
@@ -2388,7 +2561,7 @@ class MagicGemsQtApp(QMainWindow):
         self.achievement_toast_animation: QSequentialAnimationGroup | None = None
         deck_rng = create_rng(self.seed, self.seed_mode)
         state_rng = create_rng(self.seed, self.seed_mode)
-        self.game = Game(create_state(self.create_players(), build_decks(rng=deck_rng), self.seed, rng=state_rng))
+        self.game = self.create_match(deck_rng, state_rng)
         self.game_logger: logging.Logger | None = None
         self.game_log_handler: logging.FileHandler | None = None
         self.game_log_path: Path | None = None
@@ -2473,6 +2646,10 @@ class MagicGemsQtApp(QMainWindow):
         self.pages.addWidget(self.profile_page)
         self.title_page = self.build_title_page()
         self.pages.addWidget(self.title_page)
+        self.mode_page = self.build_mode_page()
+        self.pages.addWidget(self.mode_page)
+        self.custom_page = self.build_custom_page()
+        self.pages.addWidget(self.custom_page)
         self.difficulty_page = self.build_difficulty_page()
         self.pages.addWidget(self.difficulty_page)
         self.title_rules_menu_page = self.build_title_rules_menu_page()
@@ -2508,6 +2685,7 @@ class MagicGemsQtApp(QMainWindow):
         self.player_hover_hide_timer.timeout.connect(self.hide_player_status_hover)
         self.player_hover_anchor: QWidget | None = None
         self.game_started = self.ai_battle
+        self.pages.currentChanged.connect(self.reset_page_on_entry)
         self.pages.setCurrentWidget(self.game_page if self.ai_battle else self.profile_page)
         self.refresh()
         if self.ai_battle:
@@ -2898,23 +3076,170 @@ class MagicGemsQtApp(QMainWindow):
         layout.addStretch(3)
         return page
 
-    def build_difficulty_page(self) -> QWidget:
-        page = BaroqueTitlePage()
-        page.setObjectName("difficultyPage")
-        layout = QVBoxLayout(page)
-        # 返回首页与规则、设置页面共用底部 55px 的定位基线。
-        layout.setContentsMargins(92, 76, 92, 55)
-        layout.setSpacing(0)
+    def build_mode_page(self) -> QWidget:
+        page, layout = self.reference_page_shell("选择游戏模式", "modePage")
         layout.addStretch(2)
+        for text, name, callback in (
+            ("标准模式", "modeStandardButton", lambda: self.pages.setCurrentWidget(self.difficulty_page)),
+            ("自定义模式", "modeCustomButton", self.show_custom_page),
+        ):
+            layout.addWidget(self.reference_page_button(text, name, callback), 0, Qt.AlignmentFlag.AlignHCenter)
+            layout.addSpacing(12)
+        layout.addStretch(3)
+        layout.addWidget(self.reference_page_button("返回首页", "modeBackButton", lambda: self.pages.setCurrentWidget(self.title_page)), 0, Qt.AlignmentFlag.AlignHCenter)
+        return page
 
-        title = QLabel("选择对手难度")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(f"color:{TITLE_TEXT_COLOR};background:transparent;border:0;font-size:38px;font-weight:bold;")
+    def reset_page_on_entry(self, index: int) -> None:
+        """Reopen menu pages at their initial view without changing match rules."""
+        page = self.pages.widget(index)
+        for combo in (self.custom_max_rounds, self.custom_ai_difficulty, self.custom_player_order):
+            combo.hidePopup()
+        if page is self.game_page:
+            return
+        for scroll in page.findChildren(QScrollArea):
+            scroll.horizontalScrollBar().setValue(0)
+            scroll.verticalScrollBar().setValue(0)
+        if page is self.custom_page:
+            self.custom_target_score.setValue(20)
+            for combo in (self.custom_max_rounds, self.custom_ai_difficulty, self.custom_player_order):
+                combo.setCurrentIndex(0)
+            self.custom_seed_checkbox.setChecked(False)
+            self.custom_seed_input.clear()
+            self.custom_seed_input.setEnabled(False)
+            self.custom_error_label.clear()
+            page.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def show_custom_page(self) -> None:
+        self.pages.setCurrentWidget(self.custom_page)
+        self.custom_page.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def build_custom_page(self) -> QWidget:
+        page, layout = self.reference_page_shell("自定义模式", "customPage")
+        page.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        layout.addStretch(1)
+        panel = QFrame()
+        panel.setObjectName("customOptionsPanel")
+        panel.setFixedWidth(540)
+        panel.setStyleSheet(
+            f"QFrame#customOptionsPanel {{ background:{PANEL_COLOR};border:2px solid {PANEL_BORDER_COLOR};border-radius:12px; }}"
+            f"QLabel,QCheckBox {{ background:transparent;border:0;font-size:16px; }}"
+            f"QLineEdit,QComboBox {{ background:{HOVER_SURFACE_COLOR};color:{TEXT_COLOR};border:1px solid {PANEL_BORDER_COLOR};border-radius:5px;padding:7px;font-size:16px; }}"
+            f"QCheckBox::indicator {{ width:16px;height:16px;border:1px solid {PANEL_BORDER_COLOR};border-radius:3px;background:{HOVER_SURFACE_COLOR}; }}"
+            f"QLineEdit:focus,QComboBox:focus {{ border-color:{PANEL_BORDER_COLOR}; }}"
+            f"QLineEdit:disabled {{ background:{CONTROL_DISABLED_FILL_COLOR};color:{CONTROL_DISABLED_TEXT_COLOR}; }}"
+            "QComboBox { padding-right:28px; }"
+            "QComboBox::drop-down { subcontrol-origin:padding;subcontrol-position:top right;width:28px;border:0;background:transparent; }"
+            "QComboBox::down-arrow { image:none;border:0;width:0;height:0; }"
+            f"QComboBox QAbstractItemView {{ background:{PANEL_COLOR};color:{TEXT_COLOR};selection-background-color:{HOVER_SURFACE_COLOR}; }}"
+        )
+        grid = QGridLayout(panel)
+        grid.setContentsMargins(28, 24, 28, 24)
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(20)
+        score_row = QWidget()
+        score_layout = QHBoxLayout(score_row)
+        score_layout.setContentsMargins(0, 0, 0, 0)
+        self.custom_target_score = TargetScoreInput()
+        self.custom_target_score.setObjectName("customTargetScore")
+        self.custom_target_score.setValue(20)
+        self.custom_target_score.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for text, step in (("−", -1), ("+", 1)):
+            button = TitleMenuButton(text)
+            button.setObjectName("customScoreMinus" if step < 0 else "customScorePlus")
+            button.setFixedSize(42, 40)
+            button.clicked.connect(lambda _checked=False, delta=step: self.custom_target_score.stepBy(delta))
+            score_layout.addWidget(button)
+            if step < 0:
+                score_layout.addWidget(self.custom_target_score, 1)
+        grid.addWidget(QLabel("目标分数"), 0, 0)
+        grid.addWidget(score_row, 0, 1)
+        self.custom_max_rounds = CustomOptionComboBox()
+        self.custom_max_rounds.setObjectName("customMaxRounds")
+        for text, value in (("不限", None), ("10", 10), ("20", 20), ("30", 30)):
+            self.custom_max_rounds.addItem(text, value)
+        self.custom_ai_difficulty = CustomOptionComboBox()
+        self.custom_ai_difficulty.setObjectName("customAiDifficulty")
+        for text, value in (("简单", "simple"), ("困难", "hard"), ("大师", "master")):
+            self.custom_ai_difficulty.addItem(text, value)
+        self.custom_player_order = CustomOptionComboBox()
+        self.custom_player_order.setObjectName("customPlayerOrder")
+        for position in range(1, 5):
+            self.custom_player_order.addItem(str(position), position)
+        self.custom_player_order.addItem("随机", None)
+        for row, (text, widget) in enumerate((("最大回合数", self.custom_max_rounds), ("AI 难度", self.custom_ai_difficulty), ("玩家行动顺序", self.custom_player_order)), 1):
+            grid.addWidget(QLabel(text), row, 0)
+            grid.addWidget(widget, row, 1)
+        self.custom_seed_checkbox = SeedCheckBox("自定义种子")
+        self.custom_seed_checkbox.setObjectName("customSeedCheckBox")
+        self.custom_seed_input = QLineEdit()
+        self.custom_seed_input.setObjectName("customSeedInput")
+        self.custom_seed_input.setPlaceholderText("输入整数种子")
+        self.custom_seed_input.setMaxLength(101)
+        self.custom_seed_input.setEnabled(False)
+        self.custom_seed_checkbox.toggled.connect(self.custom_seed_input.setEnabled)
+        grid.addWidget(self.custom_seed_checkbox, 4, 0)
+        grid.addWidget(self.custom_seed_input, 4, 1)
+        layout.addWidget(panel, 0, Qt.AlignmentFlag.AlignHCenter)
+        note = QLabel("达到回合上限时，最高分者获胜（并列共同获胜）。")
+        note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{TITLE_SUBTITLE_COLOR};background:transparent;border:0;font-size:13px;")
+        layout.addWidget(note)
+        self.custom_error_label = QLabel("")
+        self.custom_error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.custom_error_label.setStyleSheet(f"color:{PROFILE_ERROR_COLOR};background:transparent;border:0;")
+        layout.addWidget(self.custom_error_label)
+        layout.addWidget(self.reference_page_button("开始对局", "customStartButton", self.start_custom_match), 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addStretch(1)
+        layout.addWidget(self.reference_page_button("返回游戏模式选择", "customBackButton", lambda: self.pages.setCurrentWidget(self.mode_page)), 0, Qt.AlignmentFlag.AlignHCenter)
+        return page
+
+    def configure_deepseek(self, enabled: bool) -> None:
+        if self.deepseek_executor is not None:
+            self.deepseek_executor.shutdown(wait=False, cancel_futures=True)
+        self.deepseek_opponents = {index: DeepSeekOpponent() for index in (1, 2, 3)} if enabled else {}
+        self.deepseek_executor = ThreadPoolExecutor(max_workers=1) if enabled else None
+
+    def start_custom_match(self) -> None:
+        self.custom_error_label.clear()
+        seed = None
+        if self.custom_seed_checkbox.isChecked():
+            raw = self.custom_seed_input.text().strip()
+            if not re.fullmatch(r"[+-]?[0-9]{1,100}", raw):
+                self.custom_error_label.setText("请填写有效的整数种子。")
+                self.custom_seed_input.setFocus()
+                return
+            seed = int(raw)
+        difficulty = self.custom_ai_difficulty.currentData()
+        if difficulty == "master" and not configured_api_key():
+            self.custom_error_label.setText("大师模式需要先在 .env.deepseek 中配置 DeepSeek API Key。")
+            return
+        self.stop_match_flow()
+        self.configure_deepseek(difficulty == "master")
+        self.custom_target_score.interpretText()
+        self.custom_settings = dict(target_score=self.custom_target_score.value(), max_rounds=self.custom_max_rounds.currentData(), order=self.custom_player_order.currentData(), seed=seed)
+        self._initial_seed_available = False
+        self._needs_new_match = True
+        self.start_single_player_match(difficulty, tutorial=False, custom=True)
+
+    def create_match(self, deck_rng, state_rng) -> Game:
+        state = create_state(self.create_players(), build_decks(rng=deck_rng), self.seed, rng=state_rng)
+        if self.custom_mode:
+            settings = self.custom_settings
+            # Keep the human at UI seat zero; rotate the round's starting seat.
+            self.player_action_order = settings["order"] or state_rng.randint(1, 4)
+            state.first_player = (1 - self.player_action_order) % len(state.players)
+            state.current_player = state.first_player
+            return Game(state, target_score=settings["target_score"], max_rounds=settings["max_rounds"])
+        self.player_action_order = 1
+        return Game(state)
+
+    def build_difficulty_page(self) -> QWidget:
+        page, layout = self.reference_page_shell("选择对手难度", "difficultyPage")
         difficulty_font = QFont(self.ui_font_family)
         difficulty_font.setPointSize(15)
         difficulty_font.setBold(True)
         difficulty_font.setStyleHint(QFont.StyleHint.Serif)
-        layout.addWidget(title)
         subtitle = QLabel("选择单人模式的 AI 策略水平")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle.setStyleSheet(f"color:{TITLE_SUBTITLE_COLOR};background:transparent;border:0;font-size:15px;font-weight:bold;")
@@ -2935,11 +3260,11 @@ class MagicGemsQtApp(QMainWindow):
             layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
             layout.addSpacing(12)
 
-        back = TitleMenuButton("返回首页")
+        back = TitleMenuButton("返回游戏模式选择")
         back.setObjectName("difficultyBackButton")
         back.setFixedSize(self.TITLE_MENU_BUTTON_WIDTH, 44)
         back.setFont(difficulty_font)
-        back.clicked.connect(lambda: self.pages.setCurrentWidget(self.title_page))
+        back.clicked.connect(lambda: self.pages.setCurrentWidget(self.mode_page))
         layout.addSpacing(24)
         layout.addStretch(3)
         layout.addWidget(back, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -2950,9 +3275,10 @@ class MagicGemsQtApp(QMainWindow):
         page = BaroqueTitlePage()
         page.setObjectName(object_name)
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(78, 55, 78, 55)
+        layout.setContentsMargins(78, 105, 78, 55)
         layout.setSpacing(10)
         heading = QLabel(title)
+        heading.setObjectName("pageHeading")
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         heading.setFixedHeight(50)
         heading.setStyleSheet(
@@ -3283,7 +3609,7 @@ class MagicGemsQtApp(QMainWindow):
         if self.active_profile is None:
             self.pages.setCurrentWidget(self.profile_page)
             return
-        self.pages.setCurrentWidget(self.difficulty_page)
+        self.pages.setCurrentWidget(self.mode_page)
 
     def create_players(self) -> list[Player]:
         if self.ai_battle:
@@ -3295,7 +3621,7 @@ class MagicGemsQtApp(QMainWindow):
                 )
                 for index in range(4)
             ]
-        opponents = self.SINGLE_PLAYER_OPPONENTS[self.ai_difficulty]
+        opponents = self.SINGLE_PLAYER_OPPONENTS.get(self.ai_difficulty, ("DeepSeek-1", "DeepSeek-2", "DeepSeek-3"))
         player_name = self.active_profile.nickname if self.active_profile is not None else "你"
         return [Player(player_name), *(Player(name) for name in opponents)]
 
@@ -3303,7 +3629,7 @@ class MagicGemsQtApp(QMainWindow):
         if self.ai_battle:
             return
         for player, name in zip(
-            self.game.state.players[1:], self.SINGLE_PLAYER_OPPONENTS[self.ai_difficulty]
+            self.game.state.players[1:], self.SINGLE_PLAYER_OPPONENTS.get(self.ai_difficulty, ("DeepSeek-1", "DeepSeek-2", "DeepSeek-3"))
         ):
             player.name = name
         self.render_players()
@@ -3315,6 +3641,10 @@ class MagicGemsQtApp(QMainWindow):
             if self.deepseek_all:
                 return "四 DeepSeek 对战"
             return "四 AI · DeepSeek" if self.deepseek_player is not None else "四 AI 对战模式"
+        if self.custom_mode:
+            difficulty = {"simple": "简单", "hard": "困难", "master": "大师"}[self.ai_difficulty]
+            limit = str(self.game.max_rounds) if self.game.max_rounds else "不限"
+            return f"自定义 · {difficulty} · 目标{self.game.target_score}分 · {limit}轮 · 第{self.player_action_order}手"
         difficulty = "简单" if self.ai_difficulty == "simple" else "困难"
         return f"单人 · {difficulty}模式"
 
@@ -3326,17 +3656,22 @@ class MagicGemsQtApp(QMainWindow):
         self.mark_tutorial_invitation_answered()
         self.start_single_player_match("simple", tutorial=True)
 
-    def start_single_player_match(self, difficulty: str, *, tutorial: bool) -> None:
+    def start_single_player_match(self, difficulty: str, *, tutorial: bool, custom: bool = False) -> None:
         if self.active_profile is None:
             self.pages.setCurrentWidget(self.profile_page)
             return
+        self.custom_mode = custom
+        if not custom:
+            self.custom_settings = None
         self.tutorial_mode = tutorial
         self.tutorial_guide = TutorialGuide()
         self.tutorial_prompted_turns.clear()
         self.pending_tutorial_turn = None
         self.tutorial_hint_timer.stop()
         self.tutorial_hint_toast.hide()
-        self.ai_difficulty = "simple" if difficulty == "simple" else "hard"
+        self.ai_difficulty = difficulty if difficulty in ("simple", "hard", "master") else "hard"
+        if not custom:
+            self.configure_deepseek(False)
         if tutorial:
             # A tutorial match always gets its own random setup, even when the
             # GUI was launched with a fixed seed for another match.
@@ -3354,13 +3689,17 @@ class MagicGemsQtApp(QMainWindow):
             if tutorial:
                 self.log("新手教程教学对局开始（简单 AI）")
             else:
-                self.log(f"单人模式：{'简单' if self.ai_difficulty == 'simple' else '困难'}")
+                self.log(self.current_mode_text() if custom else f"单人模式：{'简单' if self.ai_difficulty == 'simple' else '困难'}")
             self.log(f"对局开始，{seed_description(self.seed, self.seed_mode)}")
             self.enqueue_turn_banner()
 
     def begin_new_match(self) -> None:
         """在玩家选定具体模式后生成本局种子、状态和独立日志。"""
-        if self._initial_seed_available and self._initial_seed is not None:
+        fixed_seed = self.custom_settings["seed"] if self.custom_mode else None
+        if fixed_seed is not None:
+            self.seed, self.seed_mode = fixed_seed, "fixed"
+            self._initial_seed_available = False
+        elif self._initial_seed_available and self._initial_seed is not None:
             self.seed = self._initial_seed
             self.seed_mode = self._initial_seed_mode
             self._initial_seed_available = False
@@ -3373,7 +3712,7 @@ class MagicGemsQtApp(QMainWindow):
 
         deck_rng = create_rng(self.seed, self.seed_mode)
         state_rng = create_rng(self.seed, self.seed_mode)
-        self.game = Game(create_state(self.create_players(), build_decks(rng=deck_rng), self.seed, rng=state_rng))
+        self.game = self.create_match(deck_rng, state_rng)
         self.achievement_tracker = (
             AchievementTracker(self.active_profile, self.profile_store, self.ai_difficulty)
             if not self.ai_battle and self.active_profile is not None
@@ -3501,7 +3840,7 @@ class MagicGemsQtApp(QMainWindow):
         dialog.exec()
 
     @staticmethod
-    def game_rule_texts() -> tuple[str, ...]:
+    def game_rule_texts(target_score: int = 20, max_rounds: int | None = None) -> tuple[str, ...]:
         """首页规则页与局内规则速查共用同一份说明。"""
         return (
             "每回合选择一项行动：领取资源、购买宠物，或预购一张市场宠物。",
@@ -3510,7 +3849,8 @@ class MagicGemsQtApp(QMainWindow):
             "预购宠物：从市场选择一张卡放置到预购区并获得1枚贤者碎晶；预购区最多3张；之后仍需花费行动购买预购的卡片。",
             "属性专精：2张触发第1次阶段一，3张触发第1次阶段二；之后每增加3张重复阶段一、阶段二（5/6张、8/9张……），双属性不计入。",
             "魔法师卡：每局随机公开5张，符合属性条件后于回合结算时自动获得，每张加3分；获得后保留空位，本局不再补充。",
-            "胜利：只在整轮结束时结算；轮末仍达到20分的玩家中，最高分者获胜，并列则共同获胜。若无人达标且市场未耗尽，则继续游戏；市场耗尽时轮末结束对局，但无人达标则无人获胜。",
+            f"胜利：只在整轮结束时结算；轮末仍达到{target_score}分的玩家中，最高分者获胜，并列则共同获胜。若无人达标且市场未耗尽，则继续游戏；市场耗尽时轮末结束对局，但无人达标则无人获胜。"
+            + (f"本局最多{max_rounds}轮，达到上限时所有玩家中最高分者获胜，并列共同获胜。" if max_rounds else ""),
         )
 
     def show_game_rules(self) -> None:
@@ -3541,7 +3881,7 @@ class MagicGemsQtApp(QMainWindow):
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(4, 4, 8, 4)
         content_layout.setSpacing(9)
-        for text in self.game_rule_texts():
+        for text in self.game_rule_texts(self.game.target_score, self.game.max_rounds):
             label = QLabel(text)
             label.setWordWrap(True)
             label.setStyleSheet(
@@ -4639,13 +4979,19 @@ class MagicGemsQtApp(QMainWindow):
                 effect_label.setMinimumWidth(effect_label.sizeHint().width())
                 frame.updateGeometry()
 
+        display_order = [(state.first_player + offset) % len(state.players) for offset in range(len(state.players))]
         expected_indexes = set(range(len(state.players)))
         if (
             set(self.player_status_labels) == expected_indexes
             and set(self.player_status_heading_labels) == expected_indexes
             and set(self.player_status_effect_labels) == expected_indexes
         ):
-            for index in range(len(state.players)):
+            first_row = min(self.players_layout.indexOf(frame) for frame in self.player_status_labels.values())
+            for position, index in enumerate(display_order):
+                frame = self.player_status_labels[index]
+                if self.players_layout.indexOf(frame) != first_row + position:
+                    self.players_layout.removeWidget(frame)
+                    self.players_layout.insertWidget(first_row + position, frame)
                 refresh_row(
                     index,
                     self.player_status_labels[index],
@@ -4660,7 +5006,7 @@ class MagicGemsQtApp(QMainWindow):
         self.player_status_labels = {}
         self.player_status_heading_labels = {}
         self.player_status_effect_labels = {}
-        for index, player in enumerate(state.players):
+        for index in display_order:
             frame = QFrame()
             frame.setFixedHeight(25)
             frame.setObjectName("playerStatusRow")
@@ -5005,9 +5351,9 @@ class MagicGemsQtApp(QMainWindow):
         state = self.game.state
         if state.finished:
             winners = "、".join(player.name for player in self.game.winners())
-            result = f"胜者：{winners}" if winners else "无人获胜（轮末无人达到20分）"
+            result = f"胜者：{winners}" if winners else f"无人获胜（轮末无人达到{self.game.target_score}分）"
             self.status_label.setText(
-                f"第 {state.round_number} 轮　·　对局结束！{result}"
+                f"第 {max(1, state.round_number - 1)} 轮　·　对局结束！{result}"
             )
             self.status_label.setStyleSheet(
                 f"color:{PANEL_COLOR};font-size:12px;font-weight:bold;background:{TEXT_COLOR};"
@@ -7740,7 +8086,7 @@ class MagicGemsQtApp(QMainWindow):
             final_scores = "、".join(
                 f"{player.name}（{player.score}分）" for player in displayed_players
             )
-            self.log(f"最终结算：无人获胜（轮末无人达到20分）；最终分数：{final_scores}", bold=True)
+            self.log(f"最终结算：无人获胜（轮末无人达到{self.game.target_score}分）；最终分数：{final_scores}", bold=True)
 
         overlay = QWidget(self.game_page)
         overlay.setObjectName("endGameOverlay")
@@ -7777,14 +8123,14 @@ class MagicGemsQtApp(QMainWindow):
         title.setObjectName("endGameTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         panel_layout.addWidget(title)
-        winner_text = f"{winner_names} 获胜！" if winners else "无人达到20分，本局无人获胜"
+        winner_text = f"{winner_names} 获胜！" if winners else f"无人达到{self.game.target_score}分，本局无人获胜"
         winner = QLabel(winner_text)
         winner.setObjectName("endGameWinner")
         winner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         winner.setWordWrap(True)
         panel_layout.addWidget(winner)
         if not winners:
-            message_text = "本局已结束，但轮末没有玩家达到20分。"
+            message_text = f"本局已结束，但轮末没有玩家达到{self.game.target_score}分。"
         elif len(winners) == 1:
             message_text = "在这片蕴含着无穷魔力的大陆上，你摘得了属于自己的璀璨宝石"
         else:
@@ -7881,13 +8227,14 @@ class MagicGemsQtApp(QMainWindow):
         if self.game.state.finished or (not self.ai_battle and self.game.state.current_player == 0):
             return
         opponent = self.deepseek_opponents.get(self.game.state.current_player)
-        if self.ai_battle and opponent is not None:
+        if opponent is not None:
             if self.deepseek_future is None:
                 # 网络请求只读取独立快照，不能在工作线程操作游戏状态或 Qt 控件。
                 self.deepseek_game = self.game
-                self.deepseek_future = self.deepseek_executor.submit(
-                    opponent.decide, copy.deepcopy(self.game)
-                )
+                rng = self.game.state.rng
+                memo = {id(rng): random.SystemRandom()} if isinstance(rng, random.SystemRandom) else {}
+                snapshot = copy.deepcopy(self.game, memo)
+                self.deepseek_future = self.deepseek_executor.submit(opponent.decide, snapshot)
                 self.log("DeepSeek 正在思考…")
             if not self.deepseek_future.done():
                 self.ai_timer.start(100)
@@ -7944,6 +8291,14 @@ class MagicGemsQtApp(QMainWindow):
         self.tutorial_guide = TutorialGuide()
         self.tutorial_prompted_turns.clear()
         self.pending_tutorial_turn = None
+        if self.custom_mode:
+            self._needs_new_match = True
+            self.begin_new_match()
+            self.mode_label.setText(self.current_mode_text())
+            if announce:
+                self.log(f"对局重新开始，{seed_description(self.seed, self.seed_mode)}")
+                self.enqueue_turn_banner()
+            return
         new_seed = generate_random_seed()
         while new_seed == self.seed:
             new_seed = generate_random_seed()
@@ -7951,7 +8306,7 @@ class MagicGemsQtApp(QMainWindow):
         self.seed_mode = "random"
         deck_rng = create_rng(self.seed, self.seed_mode)
         state_rng = create_rng(self.seed, self.seed_mode)
-        self.game = Game(create_state(self.create_players(), build_decks(rng=deck_rng), self.seed, rng=state_rng))
+        self.game = self.create_match(deck_rng, state_rng)
         self.achievement_tracker = (
             AchievementTracker(self.active_profile, self.profile_store, self.ai_difficulty)
             if not self.ai_battle and self.active_profile is not None

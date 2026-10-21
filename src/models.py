@@ -124,16 +124,18 @@ class GameState:
     wizard_deck: list[WizardCard] = field(default_factory=list)
     rng: random.Random = field(default_factory=random.Random, repr=False)
 
+    first_player: int = 0
+
     def current(self) -> Player:
         return self.players[self.current_player]
 
     def next_player(self) -> None:
         self.current_player = (self.current_player + 1) % len(self.players)
-        if self.current_player == 0:
+        if self.current_player == self.first_player:
             self.round_number += 1
 
     def all_players_have_equal_actions(self) -> bool:
-        return self.current_player == 0
+        return self.current_player == self.first_player
 
 
 def normalize_cost(items: Iterable[tuple[Attribute, int]]) -> dict[Attribute, int]:

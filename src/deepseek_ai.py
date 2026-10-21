@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .ai import choose_action
-from .game import Action, Game, VICTORY_SCORE
+from .game import Action, Game
 from .models import ATTRIBUTES, Attribute, PetCard, Player, WizardCard
 from .rules import RuleError, payment_for
 from .specializations import legal_card_targets, legal_player_targets, single_attribute_count
@@ -281,8 +281,10 @@ def turn_prompt(game: Game, options: list[tuple[Action, dict]]) -> str:
         "round": state.round_number,
         "current_player_index": state.current_player,
         "current_player": actor.name,
-        "victory_score": VICTORY_SCORE,
-        "final_scoring": "只在整轮结束时结算；轮末仍达到20分的玩家中最高分者获胜，并列共同获胜。若无人达到20分且市场未耗尽则继续游戏；市场耗尽时结束对局但无人达标则无人获胜",
+        "victory_score": game.target_score,
+        "max_rounds": game.max_rounds,
+        "first_player_index": state.first_player,
+        "final_scoring": f"只在整轮结束时结算；轮末达到{game.target_score}分的玩家中最高分者获胜，并列共同获胜。达到最大回合数时，所有玩家中最高分者获胜，并列共同获胜。若无人达标且市场未耗尽则继续游戏；市场耗尽时无人达标则无人获胜。",
         "end_triggered": state.end_triggered,
         "market_empty": not any(state.market.cards[level] for level in (1, 2, 3)),
         "resource_pool": {attribute.value: state.resource_pool[attribute] for attribute in ATTRIBUTES},
@@ -374,7 +376,7 @@ class DeepSeekOpponent:
                     "萌一获得一次免疫其他玩家攻击；萌二对每位未免疫的对手，优先在未萌化的3级已购卡中随机选一张；没有可选3级卡时，才在未萌化的2级卡中随机选一张。1级卡不能萌化；正分卡分数归零并标记为已萌化，原本0分的卡不变且不标记；两级都没有可选卡时跳过。"
                     "恶一选择有普通属性灵碎的对手，随机偷1枚；恶二选择有已购卡的对手，随机夺取其一张卡及对应分数。"
                     "攻击可能被对手的一次性免疫挡下。购买触发专精时要先结算专精；回合结束后最多获得一张符合条件的"
-                    "公开魔法师卡（每局随机5张，每张3分），获得后原位留空，本局不再补充。所有1级宠物基础分数为0，专精仍可改变分数。胜负只在整轮结束时结算：轮末仍有至少20分的玩家才有获胜资格，资格玩家中最高分者获胜，并列共同获胜。若无人达标且市场未耗尽则继续游戏；市场耗尽时轮末结束对局，若仍无人达标则无人获胜。只依据提供的局面和行动，不猜测隐藏牌。"
+                    "公开魔法师卡（每局随机5张，每张3分），获得后原位留空，本局不再补充。所有1级宠物基础分数为0，专精仍可改变分数。胜负只在整轮结束时结算：轮末达到局面中 victory_score 的玩家才有获胜资格，资格玩家中最高分者获胜，并列共同获胜。若无人达标且市场未耗尽则继续游戏；市场耗尽时轮末结束对局，若仍无人达标则无人获胜。达到 max_rounds 时按所有玩家最高分结算。只依据提供的局面和行动，不猜测隐藏牌。"
                     "只输出 JSON，例如 {\"action_id\":\"A0\"}，不要附加说明。"
                 )},
                 {"role": "user", "content": turn_prompt(game, options)},
