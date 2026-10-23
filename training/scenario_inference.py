@@ -9,6 +9,7 @@ from training.features import FEATURE_VERSION
 from training.inference import LocalPolicy
 
 SCENARIOS=('unlimited','10','20','30')
+DIFFICULTIES=('hard',)
 
 
 def scenario_key(max_rounds):
@@ -26,16 +27,27 @@ class ScenarioPolicy:
             raise ValueError('Unsupported scenario manifest or feature version')
         entries=self.card.get('scenarios',{})
         if not entries or not set(entries).issubset(SCENARIOS):raise ValueError('Invalid scenarios')
-        self.entries=entries; self.paths={};self._active_digest=None;self._policy=None
+        difficulties=self.card.get('difficulties',{})
+        if not set(difficulties).issubset(DIFFICULTIES):raise ValueError('Invalid difficulty routes')
+        self.entries=entries; self.difficulty_entries=difficulties; self.paths={};self._active_digest=None;self._policy=None
         for key,entry in entries.items():
             path=(self.root/entry['model']).resolve()
             if not path.is_relative_to(self.root):raise ValueError('Model path must remain inside package')
             if hashlib.sha256(path.read_bytes()).hexdigest()!=entry['sha256']:raise ValueError('Model SHA256 mismatch')
             self.paths[key]=path
+        for key,entry in difficulties.items():
+            path=(self.root/entry['model']).resolve()
+            if not path.is_relative_to(self.root):raise ValueError('Model path must remain inside package')
+            if hashlib.sha256(path.read_bytes()).hexdigest()!=entry['sha256']:raise ValueError('Model SHA256 mismatch')
+            self.paths[f'difficulty:{key}']=path
 
-    def entry(self,target_score,max_rounds):
-        key=scenario_key(max_rounds)
+    def entry(self,target_score,max_rounds,difficulty=None):
         if type(target_score) is not int or not 15<=target_score<=50:raise ValueError('Supported target scores: 15 through 50')
+        if difficulty is not None:
+            if difficulty not in self.difficulty_entries:
+                raise ValueError(f'Unsupported difficulty: {difficulty}')
+            return f'difficulty:{difficulty}',self.difficulty_entries[difficulty]
+        key=scenario_key(max_rounds)
         if key not in self.entries:raise ValueError(f'This independent package does not contain scenario {key}')
         return key,self.entries[key]
 
@@ -46,20 +58,20 @@ class ScenarioPolicy:
             self._policy=LocalPolicy(self.paths[key]); self._active_digest=entry['sha256']
         return self._policy
 
-    def scores(self,state,actions,*,target_score,max_rounds):
-        key,entry=self.entry(target_score,max_rounds)
+    def scores(self,state,actions,*,target_score,max_rounds,difficulty=None):
+        key,entry=self.entry(target_score,max_rounds,difficulty)
         state=np.asarray(state,dtype=np.float32)
         expected=[target_score/50,(max_rounds or 0)/50,float(max_rounds is not None)]
         if state.shape!=(676,) or not np.allclose(state[1:4],expected,rtol=0,atol=1e-6):
             raise ValueError('Encoded rules and selected scenario differ')
         return self._load(key,entry).scores(state,actions)
 
-    def choose_action(self,game):
-        key,entry=self.entry(game.target_score,game.max_rounds)
+    def choose_action(self,game,*,difficulty=None):
+        key,entry=self.entry(game.target_score,game.max_rounds,difficulty)
         return self._load(key,entry).choose_action(game)
 
 
-def self_test(policy,target,max_rounds,games,seed):
+def self_test(policy,target,max_rounds,games,seed,difficulty=None):
     from src.ai import choose_action
     from src.cards import build_decks
     from src.game import Game
@@ -73,12 +85,12 @@ def self_test(policy,target,max_rounds,games,seed):
         game=Game(state,target_score=target,max_rounds=max_rounds);seat=number%4
         for _ in range(2000):
             if game.state.finished:break
-            game.execute(policy.choose_action(game) if game.state.current_player==seat else choose_action(game,'hard'))
+            game.execute(policy.choose_action(game,difficulty=difficulty) if game.state.current_player==seat else choose_action(game,'hard'))
         if not game.state.finished:raise RuntimeError('Self-test game truncated')
         winners=game.winners(); credit=1/len(winners) if any(p is game.state.players[seat] for p in winners) else 0.
         rows.append({'seed':game_seed,'seat':seat,'finished':True,'scores':[p.score for p in game.state.players],'victory_credit':credit})
-    key,entry=policy.entry(target,max_rounds)
-    return {'scenario':key,'target_score':target,'model_sha256':entry['sha256'],'model_status':entry['status'],
+    key,entry=policy.entry(target,max_rounds,difficulty)
+    return {'route':key,'scenario':None if difficulty else key,'difficulty':difficulty,'target_score':target,'model_sha256':entry['sha256'],'model_status':entry['status'],
             'provider':['CPUExecutionProvider'],'games':rows}
 
 
@@ -87,21 +99,22 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--manifest',type=Path,default=root/'scenarios.json')
     parser.add_argument('--max-rounds',choices=SCENARIOS)
+    parser.add_argument('--difficulty',choices=DIFFICULTIES)
     parser.add_argument('--target',type=int,default=20);parser.add_argument('--games',type=int,default=1)
     parser.add_argument('--seed',type=int,default=8_000_001)
     parser.add_argument('--input-json',help='Encoded state/actions and target_score/max_rounds; - reads stdin')
     args=parser.parse_args();policy=ScenarioPolicy(args.manifest)
     if args.input_json:
         data=json.loads(sys.stdin.read() if args.input_json=='-' else Path(args.input_json).read_text(encoding='utf-8'))
-        target=data['target_score'];limit=data['max_rounds'];scores=policy.scores(data['state'],data['actions'],target_score=target,max_rounds=limit)
-        key,entry=policy.entry(target,limit)
-        result={'scenario':key,'model_sha256':entry['sha256'],'selected_index':int(scores.argmax()),'scores':scores.tolist(),'provider':['CPUExecutionProvider']}
+        target=data['target_score'];limit=data['max_rounds'];difficulty=data.get('difficulty',args.difficulty);scores=policy.scores(data['state'],data['actions'],target_score=target,max_rounds=limit,difficulty=difficulty)
+        key,entry=policy.entry(target,limit,difficulty)
+        result={'route':key,'scenario':None if difficulty else key,'difficulty':difficulty,'model_sha256':entry['sha256'],'selected_index':int(scores.argmax()),'scores':scores.tolist(),'provider':['CPUExecutionProvider']}
     else:
         if args.games<1:parser.error('games must be positive')
         key=args.max_rounds or (next(iter(policy.entries)) if len(policy.entries)==1 else 'unlimited')
         limit=None if key=='unlimited' else int(key)
-        policy.entry(args.target,limit)
-        result=self_test(policy,args.target,limit,args.games,args.seed)
+        policy.entry(args.target,limit,args.difficulty)
+        result=self_test(policy,args.target,limit,args.games,args.seed,args.difficulty)
     print(json.dumps(result,ensure_ascii=False,indent=2))
 
 

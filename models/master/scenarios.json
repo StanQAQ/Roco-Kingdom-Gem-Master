@@ -32,5 +32,14 @@
       "target_min": 15,
       "target_max": 50
     }
+  },
+  "difficulties": {
+    "hard": {
+      "model": "hard.onnx",
+      "sha256": "b83c7519c4b2d8d55f231d5879a85b2354028ec2102813532f3cc68d71e0418a",
+      "status": "retained_published_ppo48_difficulty_route",
+      "target_min": 15,
+      "target_max": 50
+    }
   }
 }
