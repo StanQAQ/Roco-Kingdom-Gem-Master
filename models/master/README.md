@@ -15,7 +15,7 @@
 
 ```powershell
 python -m pip install -r requirements-inference.txt
-python -m training.scenario_inference --manifest models/master/scenarios.json --max-rounds 10 --target 20 --games 1
+python -m training.scenario_inference --manifest models/scenarios.json --max-rounds 10 --target 20 --games 1
 ```
 
 `--max-rounds` 支持 `unlimited`、`10`、`20`、`30`，`--target` 支持 15 至 50。
@@ -26,7 +26,7 @@ python -m training.scenario_inference --manifest models/master/scenarios.json --
 `--max-rounds`，也不会覆盖四个回合场景模型。例如：
 
 ```powershell
-python -m training.scenario_inference --manifest models/master/scenarios.json --difficulty hard --target 20 --games 1
+python -m training.scenario_inference --manifest models/scenarios.json --difficulty hard --target 20 --games 1
 ```
 
 在已有 `Game` 对局中调用：
@@ -34,7 +34,7 @@ python -m training.scenario_inference --manifest models/master/scenarios.json --
 ```python
 from training.scenario_inference import ScenarioPolicy
 
-policy = ScenarioPolicy("models/master/scenarios.json")
+policy = ScenarioPolicy("models/scenarios.json")
 action = policy.choose_action(game)
 # 困难模式显式选择 PPO48；四场景模式仍按 game.max_rounds 路由。
 hard_action = policy.choose_action(game, difficulty="hard")

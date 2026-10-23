@@ -97,7 +97,7 @@ def self_test(policy,target,max_rounds,games,seed,difficulty=None):
 def main():
     root=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parents[1]))
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--manifest',type=Path,default=root/'scenarios.json')
+    parser.add_argument('--manifest',type=Path,default=root/'models'/'scenarios.json' if (root/'models'/'scenarios.json').exists() else root/'scenarios.json')
     parser.add_argument('--max-rounds',choices=SCENARIOS)
     parser.add_argument('--difficulty',choices=DIFFICULTIES)
     parser.add_argument('--target',type=int,default=20);parser.add_argument('--games',type=int,default=1)

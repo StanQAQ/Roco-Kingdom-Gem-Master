@@ -61,7 +61,7 @@ htmlcov/
 !/models/master/10.onnx
 !/models/master/20.onnx
 !/models/master/30.onnx
-!/models/master/hard.onnx
+!/models/hard/ppo48.onnx
 
 # Keep the inference modules and final model runner; training stays local.
 /training/*
