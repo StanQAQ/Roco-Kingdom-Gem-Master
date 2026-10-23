@@ -69,6 +69,8 @@ python3 -m src.cli --gui --random-seed
 
 ## AI 对战
 
+最终本地 ONNX 模型及 CPU 推理用法见 [最终运行模型](models/master/README.md)。模型可独立运行，尚未接入 GUI 的大师模式；训练过程、检查点和方案仅保留在本地。
+
 四 AI 对战没有游戏标题页入口，只能通过命令行启动。运行命令行对战：
 
 ```bash

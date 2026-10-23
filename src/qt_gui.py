@@ -21,7 +21,7 @@ import threading
 import wave
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPoint, Property, QPauseAnimation, QRect, QRectF, Signal, Qt, QParallelAnimationGroup, QPropertyAnimation,
+    QEasingCurve, QEvent, QPoint, QPointF, Property, QPauseAnimation, QRect, QRectF, Signal, Qt, QParallelAnimationGroup, QPropertyAnimation,
     QSequentialAnimationGroup, QSize, QTimer,
 )
 from PySide6.QtGui import (
@@ -274,27 +274,83 @@ class TargetScoreInput(QLineEdit):
         super().__init__()
         self._value = 20
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self.setValidator(QIntValidator(15, 50, self))
+        # Keep input numeric while allowing out-of-range values to remain visible
+        # so the start action can explain why they are rejected.
+        self.setValidator(QIntValidator(0, 999, self))
+        self.setMaxLength(3)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setText("20")
         self.editingFinished.connect(self.interpretText)
 
-    def value(self) -> int:
+    def parsedValue(self) -> int | None:
         text = self.text().strip()
-        return min(50, max(15, int(text))) if text else self._value
+        if not text.isascii() or not text.isdigit():
+            return None
+        value = int(text)
+        return value if 15 <= value <= 50 else None
+
+    def value(self) -> int:
+        value = self.parsedValue()
+        return value if value is not None else self._value
 
     def setValue(self, value: int) -> None:
         self._value = min(50, max(15, value))
         self.setText(str(self._value))
 
     def stepBy(self, steps: int) -> None:
-        self.setValue(self.value() + steps)
+        value = self.parsedValue()
+        self.setValue((value if value is not None else self._value) + steps)
 
     def interpretText(self) -> None:
-        self.setValue(self.value())
+        value = self.parsedValue()
+        if value is not None:
+            self.setValue(value)
 
     def lineEdit(self) -> QLineEdit:
         return self
+
+
+class ScoreStepButton(QAbstractButton):
+    """Compact target-score control with evenly drawn edges and a font-free sign."""
+
+    def __init__(self, step: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.step = step
+        self._hovered = False
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+
+    def paintEvent(self, _event) -> None:
+        pressed = self.isDown()
+        accent = pressed or self._hovered
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor(ORNAMENT_ACCENT_COLOR if pressed else PANEL_COLOR))
+
+        border_pen = QPen(QColor(ORNAMENT_ACCENT_COLOR if accent else PANEL_BORDER_COLOR), 2)
+        painter.setPen(border_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(QRectF(1, 1, self.width() - 2, self.height() - 2))
+
+        sign_pen = QPen(QColor(TEXT_COLOR), 2)
+        sign_pen.setCapStyle(Qt.PenCapStyle.SquareCap)
+        painter.setPen(sign_pen)
+        center_x = self.width() / 2
+        center_y = self.height() / 2
+        half_width = 6
+        painter.drawLine(QPointF(center_x - half_width, center_y), QPointF(center_x + half_width, center_y))
+        if self.step > 0:
+            painter.drawLine(QPointF(center_x, center_y - half_width), QPointF(center_x, center_y + half_width))
+
+    def enterEvent(self, event) -> None:
+        super().enterEvent(event)
+        self._hovered = True
+        self.update()
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        self._hovered = False
+        self.update()
 
 
 class CustomOptionsPopup(QWidget):
@@ -3143,8 +3199,8 @@ class MagicGemsQtApp(QMainWindow):
         self.custom_target_score.setObjectName("customTargetScore")
         self.custom_target_score.setValue(20)
         self.custom_target_score.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        for text, step in (("−", -1), ("+", 1)):
-            button = TitleMenuButton(text)
+        for step in (-1, 1):
+            button = ScoreStepButton(step)
             button.setObjectName("customScoreMinus" if step < 0 else "customScorePlus")
             button.setFixedSize(42, 40)
             button.clicked.connect(lambda _checked=False, delta=step: self.custom_target_score.stepBy(delta))
@@ -3191,7 +3247,7 @@ class MagicGemsQtApp(QMainWindow):
         layout.addWidget(self.custom_error_label)
         layout.addWidget(self.reference_page_button("开始对局", "customStartButton", self.start_custom_match), 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch(1)
-        layout.addWidget(self.reference_page_button("返回游戏模式选择", "customBackButton", lambda: self.pages.setCurrentWidget(self.mode_page)), 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(self.reference_page_button("返回", "customBackButton", lambda: self.pages.setCurrentWidget(self.mode_page)), 0, Qt.AlignmentFlag.AlignHCenter)
         return page
 
     def configure_deepseek(self, enabled: bool) -> None:
@@ -3202,6 +3258,11 @@ class MagicGemsQtApp(QMainWindow):
 
     def start_custom_match(self) -> None:
         self.custom_error_label.clear()
+        target_score = self.custom_target_score.parsedValue()
+        if target_score is None:
+            self.custom_error_label.setText("目标分数需为 15 至 50 之间的整数。")
+            self.custom_target_score.setFocus()
+            return
         seed = None
         if self.custom_seed_checkbox.isChecked():
             raw = self.custom_seed_input.text().strip()
@@ -3217,7 +3278,7 @@ class MagicGemsQtApp(QMainWindow):
         self.stop_match_flow()
         self.configure_deepseek(difficulty == "master")
         self.custom_target_score.interpretText()
-        self.custom_settings = dict(target_score=self.custom_target_score.value(), max_rounds=self.custom_max_rounds.currentData(), order=self.custom_player_order.currentData(), seed=seed)
+        self.custom_settings = dict(target_score=target_score, max_rounds=self.custom_max_rounds.currentData(), order=self.custom_player_order.currentData(), seed=seed)
         self._initial_seed_available = False
         self._needs_new_match = True
         self.start_single_player_match(difficulty, tutorial=False, custom=True)
@@ -3260,7 +3321,7 @@ class MagicGemsQtApp(QMainWindow):
             layout.addWidget(button, 0, Qt.AlignmentFlag.AlignHCenter)
             layout.addSpacing(12)
 
-        back = TitleMenuButton("返回游戏模式选择")
+        back = TitleMenuButton("返回")
         back.setObjectName("difficultyBackButton")
         back.setFixedSize(self.TITLE_MENU_BUTTON_WIDTH, 44)
         back.setFont(difficulty_font)

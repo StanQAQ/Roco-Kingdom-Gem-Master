@@ -6,7 +6,7 @@ __pycache__/
 .Python
 
 # Python 虚拟环境与打包缓存
-.venv*/
+.venv*
 .venv/
 venv/
 env/
@@ -46,6 +46,35 @@ htmlcov/
 # 游戏运行日志
 /logs/
 *.log
+
+# Offline training datasets, checkpoints and evaluation outputs
+/training_runs/
+*.pt
+*.pth
+*.ckpt
+*.npz
+*.npy
+
+# Only the final inference weights belong in the repository.
+*.onnx
+!/models/master/unlimited.onnx
+!/models/master/10.onnx
+!/models/master/20.onnx
+!/models/master/30.onnx
+
+# Keep the inference modules and final model runner; training stays local.
+/training/*
+!/training/__init__.py
+!/training/features.py
+!/training/inference.py
+!/training/scenario_inference.py
+/scripts/*
+!/scripts/windows_scenario_runner.py
+/requirements-training*.txt
+/TRAINING.md
+/WINDOWS_TRAINING_HANDOFF.md
+/LOCAL_MODEL_STATUS.md
+/GPU_TRAINING_PLAN.md
 
 # 玩家档案保存在系统用户数据目录；防止误放到仓库时上传
 /profile/
@@ -89,6 +118,7 @@ tests/
 
 # 方案、规划类 Markdown 和 Word 文档仅保留在本地，不上传至 GitHub
 /PLAN.md
+/*PLAN*.md
 *方案*.md
 *规划*.md
 *.docx

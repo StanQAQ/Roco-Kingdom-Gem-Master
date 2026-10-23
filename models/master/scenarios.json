@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "feature_version": "visible-v1",
+  "state_dim": 676,
+  "action_dim": 45,
+  "scenarios": {
+    "unlimited": {
+      "model": "unlimited.onnx",
+      "sha256": "72f9810c93056c80ead7f2393f1f081f2dfadd969ca53dd7282d9775979b459c",
+      "status": "verified_unlimited_round_specialist",
+      "target_min": 15,
+      "target_max": 50
+    },
+    "10": {
+      "model": "10.onnx",
+      "sha256": "976ed44fef858311085839e8064d589a3b30061d5296c6fbe3c00cf457cfd7c8",
+      "status": "retained_independently_qualified_specialist",
+      "target_min": 15,
+      "target_max": 50
+    },
+    "20": {
+      "model": "20.onnx",
+      "sha256": "3c3ce07230e1973a11cb9e67bf60e7bf4a1c15aa60c1001ab28c4d0811d49ec5",
+      "status": "verified_20_round_specialist",
+      "target_min": 15,
+      "target_max": 50
+    },
+    "30": {
+      "model": "30.onnx",
+      "sha256": "3c3ce07230e1973a11cb9e67bf60e7bf4a1c15aa60c1001ab28c4d0811d49ec5",
+      "status": "verified_30_round_specialist",
+      "target_min": 15,
+      "target_max": 50
+    }
+  }
+}
