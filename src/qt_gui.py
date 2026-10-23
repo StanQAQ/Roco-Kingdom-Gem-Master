@@ -46,7 +46,7 @@ from PySide6.QtCore import QUrl
 from .ai import choose_action
 from .achievement_definitions import ACHIEVEMENTS, ACHIEVEMENTS_BY_DIFFICULTY
 from .achievement_tracker import AchievementTracker, sync_profile_achievements
-from .deepseek_ai import DeepSeekOpponent, configured_api_key
+from .deepseek_ai import DeepSeekOpponent
 from .cards import build_decks, name_for_card_id
 from .game import Action, Game
 from .models import ATTRIBUTES, Attribute, PetCard, Player, SpecializationEffect
@@ -2561,6 +2561,7 @@ class MagicGemsQtApp(QMainWindow):
     SINGLE_PLAYER_OPPONENTS = {
         "simple": ("米米", "米莎", "米蒂"),
         "hard": ("可丽希亚", "菲尔特", "卡普"),
+        "master": ("大师-1", "大师-2", "大师-3"),
     }
     RESOURCE_COLORS = ATTRIBUTE_COLORS
     RESOURCE_NAMES = {
@@ -2605,6 +2606,7 @@ class MagicGemsQtApp(QMainWindow):
         self.custom_settings = None
         self.player_action_order = 1
         self.ai_difficulty = "hard"
+        self.local_policy = None
         self.profile_store = profile_store if profile_store is not None else ProfileStore()
         self.active_profile: PlayerProfile | None = None
         self.achievement_tracker: AchievementTracker | None = None
@@ -3272,11 +3274,7 @@ class MagicGemsQtApp(QMainWindow):
                 return
             seed = int(raw)
         difficulty = self.custom_ai_difficulty.currentData()
-        if difficulty == "master" and not configured_api_key():
-            self.custom_error_label.setText("大师模式需要先在 .env.deepseek 中配置 DeepSeek API Key。")
-            return
         self.stop_match_flow()
-        self.configure_deepseek(difficulty == "master")
         self.custom_target_score.interpretText()
         self.custom_settings = dict(target_score=target_score, max_rounds=self.custom_max_rounds.currentData(), order=self.custom_player_order.currentData(), seed=seed)
         self._initial_seed_available = False
@@ -3682,7 +3680,7 @@ class MagicGemsQtApp(QMainWindow):
                 )
                 for index in range(4)
             ]
-        opponents = self.SINGLE_PLAYER_OPPONENTS.get(self.ai_difficulty, ("DeepSeek-1", "DeepSeek-2", "DeepSeek-3"))
+        opponents = self.SINGLE_PLAYER_OPPONENTS[self.ai_difficulty]
         player_name = self.active_profile.nickname if self.active_profile is not None else "你"
         return [Player(player_name), *(Player(name) for name in opponents)]
 
@@ -3690,7 +3688,7 @@ class MagicGemsQtApp(QMainWindow):
         if self.ai_battle:
             return
         for player, name in zip(
-            self.game.state.players[1:], self.SINGLE_PLAYER_OPPONENTS.get(self.ai_difficulty, ("DeepSeek-1", "DeepSeek-2", "DeepSeek-3"))
+            self.game.state.players[1:], self.SINGLE_PLAYER_OPPONENTS[self.ai_difficulty]
         ):
             player.name = name
         self.render_players()
@@ -3721,6 +3719,26 @@ class MagicGemsQtApp(QMainWindow):
         if self.active_profile is None:
             self.pages.setCurrentWidget(self.profile_page)
             return
+        difficulty = difficulty if difficulty in ("simple", "hard", "master") else "hard"
+        try:
+            if difficulty == "simple":
+                self.local_policy = None
+            else:
+                # Lazy import keeps tutorials/simple play available without the inference runtime.
+                from training.scenario_inference import ScenarioPolicy
+
+                policy = self.local_policy or ScenarioPolicy(runtime_resource_root() / "models" / "scenarios.json")
+                settings = self.custom_settings if custom else {"target_score": 20, "max_rounds": None}
+                policy.prepare(settings["target_score"], settings["max_rounds"],
+                               difficulty="hard" if difficulty == "hard" else None)
+                self.local_policy = policy
+        except Exception as error:
+            message = f"本地 AI 模型加载失败，请检查游戏模型文件和推理依赖。\n{type(error).__name__}: {error}"
+            if custom:
+                self.custom_error_label.setText(message)
+            else:
+                self.show_themed_message(QMessageBox.Icon.Warning, "无法开始对局", message, QMessageBox.StandardButton.Ok)
+            return
         self.custom_mode = custom
         if not custom:
             self.custom_settings = None
@@ -3730,9 +3748,8 @@ class MagicGemsQtApp(QMainWindow):
         self.pending_tutorial_turn = None
         self.tutorial_hint_timer.stop()
         self.tutorial_hint_toast.hide()
-        self.ai_difficulty = difficulty if difficulty in ("simple", "hard", "master") else "hard"
-        if not custom:
-            self.configure_deepseek(False)
+        self.ai_difficulty = difficulty
+        self.configure_deepseek(False)
         if tutorial:
             # A tutorial match always gets its own random setup, even when the
             # GUI was launched with a fixed seed for another match.
@@ -8287,6 +8304,17 @@ class MagicGemsQtApp(QMainWindow):
             return
         if self.game.state.finished or (not self.ai_battle and self.game.state.current_player == 0):
             return
+        if not self.ai_battle and self.local_policy is not None:
+            try:
+                action = self.local_policy.choose_action(
+                    self.game, difficulty="hard" if self.ai_difficulty == "hard" else None,
+                )
+            except Exception as error:
+                self.log(f"本地 AI 决策失败：{type(error).__name__}: {error}")
+                self.show_themed_message(QMessageBox.Icon.Warning, "AI 决策失败", "本地 AI 无法完成本回合，请重新开始或返回标题。", QMessageBox.StandardButton.Ok)
+                return
+            self.perform(action)
+            return
         opponent = self.deepseek_opponents.get(self.game.state.current_player)
         if opponent is not None:
             if self.deepseek_future is None:
@@ -8492,6 +8520,7 @@ class MagicGemsQtApp(QMainWindow):
         self.deepseek_player = None
         self.deepseek_all = False
         self.deepseek_opponents = {}
+        self.local_policy = None
         if self.deepseek_executor is not None:
             self.deepseek_executor.shutdown(wait=False, cancel_futures=True)
             self.deepseek_executor = None

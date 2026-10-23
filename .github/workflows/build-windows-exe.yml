@@ -22,7 +22,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install build dependencies
-        run: python -m pip install --upgrade pip "PySide6>=6.8" PyInstaller
+        run: python -m pip install --upgrade pip "PySide6>=6.8" PyInstaller -r requirements-inference.txt
 
       - name: Build one-file GUI executable
         run: >-
@@ -31,7 +31,8 @@ jobs:
           --icon "../media/icon.ico"
           --distpath dist --workpath build --specpath build
           --exclude-module tests --exclude-module src.animation_demo
-          --exclude-module simulate_balance --add-data "../media;media" run_game.py
+          --exclude-module simulate_balance --collect-all onnxruntime
+          --add-data "../models;models" --add-data "../media;media" run_game.py
 
       - name: Upload executable
         uses: actions/upload-artifact@v7

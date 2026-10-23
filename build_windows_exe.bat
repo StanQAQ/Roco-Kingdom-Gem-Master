@@ -21,11 +21,11 @@ if errorlevel 1 (
 echo Installing build dependencies...
 py -3.12 -m pip install --upgrade pip
 if errorlevel 1 goto :failed
-py -3.12 -m pip install "PySide6>=6.8" PyInstaller
+py -3.12 -m pip install "PySide6>=6.8" PyInstaller -r requirements-inference.txt
 if errorlevel 1 goto :failed
 
 echo Building standalone GUI executable...
-py -3.12 -m PyInstaller --noconfirm --clean --onefile --windowed --name "Roco Kingdom Gem Master" --icon "../media/icon.ico" --distpath dist --workpath build --specpath build --exclude-module tests --exclude-module src.animation_demo --exclude-module simulate_balance --add-data "../media;media" run_game.py
+py -3.12 -m PyInstaller --noconfirm --clean --onefile --windowed --name "Roco Kingdom Gem Master" --icon "../media/icon.ico" --distpath dist --workpath build --specpath build --exclude-module tests --exclude-module src.animation_demo --exclude-module simulate_balance --collect-all onnxruntime --add-data "../models;models" --add-data "../media;media" run_game.py
 if errorlevel 1 goto :failed
 
 if not exist "dist\Roco Kingdom Gem Master.exe" goto :failed

@@ -20,7 +20,8 @@ python -m training.scenario_inference --manifest models/scenarios.json --max-rou
 
 `--max-rounds` 支持 `unlimited`、`10`、`20`、`30`，`--target` 支持 15 至 50。
 推理只使用 CPU、NumPy 和 ONNX Runtime，不需要 PyTorch、CUDA 或 API 密钥。
-该入口运行独立无界面对局检查，不会自动替换 GUI 中的 DeepSeek 大师模式。
+该命令运行独立无界面对局检查。GUI 的自定义大师模式也通过统一清单
+`models/scenarios.json` 按最大回合数选择这四个模型，无需 DeepSeek API 密钥。
 
 困难模式使用独立的 PPO48 权重，必须显式指定 `--difficulty hard`；它不依赖
 `--max-rounds`，也不会覆盖四个回合场景模型。例如：
@@ -43,5 +44,6 @@ hard_action = policy.choose_action(game, difficulty="hard")
 模型按 `game.max_rounds` 选择，加载时校验权重 SHA256 和特征版本。
 困难模式按 `difficulty="hard"` 选择，使用同一套 676 维局面编码和 45 维候选动作接口，
 并独立校验 PPO48 的 SHA256。四个场景模型和困难模式模型每次只加载当前路由所需的一个权重。
+GUI 的标准困难模式和自定义困难模式均使用这一 PPO48 路由。
 本目录不包含训练或强度验收报告；清单中的历史状态沿用已选定交付包，
 本次整理仅检查权重一致性及推理运行，不重新进行强度验收。

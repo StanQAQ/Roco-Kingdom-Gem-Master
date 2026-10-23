@@ -1,1 +1,1 @@
-"""Offline policy training; independent of the GUI and account system."""
+"""Portable policy feature encoding and CPU inference for the game."""

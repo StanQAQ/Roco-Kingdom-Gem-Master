@@ -70,6 +70,11 @@ class ScenarioPolicy:
         key,entry=self.entry(game.target_score,game.max_rounds,difficulty)
         return self._load(key,entry).choose_action(game)
 
+    def prepare(self, target_score, max_rounds, *, difficulty=None):
+        """Validate the route and load its CPU session before starting a match."""
+        key, entry = self.entry(target_score, max_rounds, difficulty)
+        self._load(key, entry)
+
 
 def self_test(policy,target,max_rounds,games,seed,difficulty=None):
     from src.ai import choose_action
